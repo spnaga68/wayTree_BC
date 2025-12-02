@@ -8,6 +8,8 @@ import userRoutes from "./routes/userRoutes";
 import aiProfileRoutes from "./routes/aiProfileRoutes";
 import documentRoutes from "./routes/documentRoutes";
 import goalRoutes from "./routes/goalRoutes";
+import networkCodeRoutes from "./routes/networkCodeRoutes";
+import connectionRoutes from "./routes/connectionRoutes";
 import { debugLogger, logAppMode } from "./middleware/debugMiddleware";
 
 const app = express();
@@ -30,6 +32,9 @@ app.use(
 // Body parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve static files for QR codes
+app.use("/qr-codes", express.static("public/qr-codes"));
 
 // Debug logging middleware (only in debug mode)
 app.use(debugLogger);
@@ -65,6 +70,12 @@ app.use("/me/documents", documentRoutes);
 
 // Goals routes (protected)
 app.use("/me/goals", goalRoutes);
+
+// Network codes routes (protected)
+app.use("/network-codes", networkCodeRoutes);
+
+// Connection routes (protected)
+app.use("/connections", connectionRoutes);
 
 // 404 handler
 app.use((_req: Request, res: Response) => {

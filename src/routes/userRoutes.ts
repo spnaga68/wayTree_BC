@@ -22,7 +22,7 @@ router.get(
         return;
       }
 
-      const user = await User.findById(req.user.id).exec();
+      const user = await User.findById(req.user.userId).exec();
 
       if (!user) {
         res.status(404).json({
@@ -131,7 +131,7 @@ router.put(
       }
 
       const user = await User.findByIdAndUpdate(
-        req.user.id,
+        req.user.userId,
         { $set: updates },
         { new: true, runValidators: true }
       ).exec();
