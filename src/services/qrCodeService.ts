@@ -1,29 +1,12 @@
 import QRCode from "qrcode";
-import fs from "fs";
-import path from "path";
 
 /**
  * QR Code Service for generating and managing QR codes for network codes
+ * QR codes are generated as Base64 data URLs and stored in MongoDB
  */
 export class QRCodeService {
-  private static qrCodeDir = path.join(process.cwd(), "public", "qr-codes");
-
   /**
-   * Initialize QR code directory
-   */
-  static init() {
-    // Create directories if they don't exist
-    const publicDir = path.join(process.cwd(), "public");
-    if (!fs.existsSync(publicDir)) {
-      fs.mkdirSync(publicDir, { recursive: true });
-    }
-    if (!fs.existsSync(this.qrCodeDir)) {
-      fs.mkdirSync(this.qrCodeDir, { recursive: true });
-    }
-  }
-
-  /**
-   * Generate QR code for network code
+   * Generate QR code as Base64 string
    */
   static async generateQRCode(
     codeId: string,
@@ -35,9 +18,7 @@ export class QRCodeService {
     }
   ): Promise<string> {
     try {
-      this.init();
-
-      // Create QR code data - you can customize this format based on your app needs
+      // Create QR code data
       const qrData = {
         type: "network_code",
         codeId: codeId,
@@ -45,9 +26,7 @@ export class QRCodeService {
         description: networkCodeData.description,
         keywords: networkCodeData.keywords,
         autoConnect: networkCodeData.autoConnect,
-        joinUrl: `${
-          process.env.APP_BASE_URL || "https://app.goalnet.com"
-        }/join/${codeId}`,
+        joinUrl: `${process.env.APP_BASE_URL || "https://app.goalnet.com"}/join/${codeId}`,
         timestamp: new Date().toISOString(),
       };
 
@@ -59,50 +38,29 @@ export class QRCodeService {
           dark: "#000000",
           light: "#FFFFFF",
         },
-        width: 256,
+        width: 512,
       });
 
-      // Convert base64 to buffer and save as file
-      const base64Data = qrCodeDataURL.replace(/^data:image\/png;base64,/, "");
-      const buffer = Buffer.from(base64Data, "base64");
-
-      // Generate filename
-      const filename = `${codeId}-${Date.now()}.png`;
-      const filePath = path.join(this.qrCodeDir, filename);
-
-      // Save file
-      fs.writeFileSync(filePath, buffer);
-
-      // Return public URL
-      const baseUrl = process.env.BASE_URL || "http://localhost:3000";
-      return `${baseUrl}/qr-codes/${filename}`;
-    } catch (error) {
+      return qrCodeDataURL;
+    } catch (error: any) {
       console.error("Error generating QR code:", error);
-      throw new Error("Failed to generate QR code");
+      throw new Error(`Failed to generate QR code: ${error.message}`);
     }
   }
 
   /**
-   * Delete QR code file
+   * Delete QR code (No-op for Base64)
    */
-  static deleteQRCode(qrCodeUrl: string): void {
-    try {
-      const filename = path.basename(qrCodeUrl);
-      const filePath = path.join(this.qrCodeDir, filename);
-
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    } catch (error) {
-      console.error("Error deleting QR code file:", error);
-    }
+  static async deleteQRCode(_qrCodeUrl: string): Promise<void> {
+    // No-op since we are using Base64 strings stored in DB
+    return;
   }
 
   /**
-   * Update QR code (delete old and create new)
+   * Update QR code (Regenerate)
    */
   static async updateQRCode(
-    oldQrCodeUrl: string,
+    _oldQrCodeUrl: string,
     codeId: string,
     networkCodeData: {
       name: string;
@@ -111,12 +69,27 @@ export class QRCodeService {
       autoConnect: boolean;
     }
   ): Promise<string> {
-    // Delete old QR code
-    if (oldQrCodeUrl) {
-      this.deleteQRCode(oldQrCodeUrl);
-    }
-
-    // Generate new QR code
     return await this.generateQRCode(codeId, networkCodeData);
+  }
+
+  /**
+   * Generate QR code for simple text/URL (utility method)
+   */
+  static async generateSimpleQRCode(
+    data: string,
+    _publicId?: string
+  ): Promise<string> {
+    try {
+      const qrCodeDataURL = await QRCode.toDataURL(data, {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 512,
+      });
+
+      return qrCodeDataURL;
+    } catch (error) {
+      console.error("Error generating simple QR code:", error);
+      throw new Error("Failed to generate QR code");
+    }
   }
 }

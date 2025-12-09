@@ -7,8 +7,10 @@ export interface INetworkCode extends Document {
   description: string;
   keywords: string[];
   autoConnect: boolean;
+  isActive: boolean;
   expirationTime: Date | null;
   qrCodeUrl: string;
+  mediaUrls: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -46,6 +48,10 @@ const networkCodeSchema = new Schema<INetworkCode>(
       type: Boolean,
       default: false,
     },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
     expirationTime: {
       type: Date,
       default: null,
@@ -54,6 +60,12 @@ const networkCodeSchema = new Schema<INetworkCode>(
       type: String,
       required: true,
     },
+    mediaUrls: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
   },
   {
     timestamps: true, // Adds createdAt and updatedAt fields

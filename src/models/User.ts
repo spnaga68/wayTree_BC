@@ -5,16 +5,18 @@ export interface IUser extends Document {
   name: string;
   role?: "founder" | "investor" | "mentor" | "cxo" | "service" | "other";
   primaryGoal?:
-    | "fundraising"
-    | "clients"
-    | "cofounder"
-    | "hiring"
-    | "learn"
-    | "other";
+  | "fundraising"
+  | "clients"
+  | "cofounder"
+  | "hiring"
+  | "learn"
+  | "other";
   company?: string;
   website?: string;
   location?: string;
   oneLiner?: string;
+  photoUrl?: string;
+  connectionCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -59,6 +61,14 @@ const UserSchema = new Schema<IUser>(
     oneLiner: {
       type: String,
       trim: true,
+    },
+    photoUrl: {
+      type: String,
+      trim: true,
+    },
+    connectionCount: {
+      type: Number,
+      default: 0,
     },
   },
   {

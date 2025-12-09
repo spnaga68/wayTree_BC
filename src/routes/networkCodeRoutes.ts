@@ -9,6 +9,19 @@ import mongoose from "mongoose";
 const router = Router();
 
 /**
+ * Helper function to check and update network code expiry status
+ */
+async function checkAndExpireNetworkCode(networkCode: any) {
+  if (networkCode.expirationTime && new Date() > new Date(networkCode.expirationTime)) {
+    if (networkCode.isActive) {
+      networkCode.isActive = false;
+      await networkCode.save();
+    }
+  }
+  return networkCode;
+}
+
+/**
  * POST /network-codes
  * Create a new network code
  */
@@ -41,6 +54,15 @@ router.post("/", authMiddleware, async (req: AuthRequest, res: Response) => {
       res.status(409).json({
         error: "Conflict",
         message: "Network code with this codeId already exists",
+      });
+      return;
+    }
+
+    // Validate expiration time must be in the future
+    if (expirationTime && new Date(expirationTime) <= new Date()) {
+      res.status(400).json({
+        error: "Validation Error",
+        message: "Expiration time must be in the future",
       });
       return;
     }
@@ -127,6 +149,11 @@ router.get("/", authMiddleware, async (req: AuthRequest, res: Response) => {
       .populate("userId", "name email")
       .sort({ createdAt: -1 });
 
+    // Check and auto-expire network codes
+    for (const code of networkCodes) {
+      await checkAndExpireNetworkCode(code);
+    }
+
     // Add member counts to each network code
     const networkCodesWithMemberCount = await Promise.all(
       networkCodes.map(async (networkCode) => {
@@ -202,6 +229,9 @@ router.get(
         });
         return;
       }
+
+      // Check and auto-expire this network code
+      await checkAndExpireNetworkCode(networkCode);
 
       // Add member statistics
       const [totalConnections, acceptedMembers, pendingRequests] =
@@ -290,8 +320,18 @@ router.put(
       if (description !== undefined) networkCode.description = description;
       if (keywords !== undefined) networkCode.keywords = keywords;
       if (autoConnect !== undefined) networkCode.autoConnect = autoConnect;
-      if (expirationTime !== undefined)
+
+      // Validate expiration time must be in the future
+      if (expirationTime !== undefined) {
+        if (expirationTime && new Date(expirationTime) <= new Date()) {
+          res.status(400).json({
+            error: "Validation Error",
+            message: "Expiration time must be in the future",
+          });
+          return;
+        }
         networkCode.expirationTime = expirationTime;
+      }
 
       // Regenerate QR code if needed
       if (needsQRUpdate) {

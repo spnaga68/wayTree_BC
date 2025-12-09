@@ -10,6 +10,10 @@ import documentRoutes from "./routes/documentRoutes";
 import goalRoutes from "./routes/goalRoutes";
 import networkCodeRoutes from "./routes/networkCodeRoutes";
 import connectionRoutes from "./routes/connectionRoutes";
+import uploadRoutes from "./routes/uploadRoutes";
+import followingRoutes from "./routes/followingRoutes";
+import qrProfileRoutes from "./routes/qrProfileRoutes";
+import eventRoutes from "./routes/eventRoutes";
 import { debugLogger, logAppMode } from "./middleware/debugMiddleware";
 
 const app = express();
@@ -30,8 +34,8 @@ app.use(
 );
 
 // Body parsing
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' })); // Increased limit for Base64 images
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Serve static files for QR codes
 app.use("/qr-codes", express.static("public/qr-codes"));
@@ -59,9 +63,6 @@ app.get("/health", (_req: Request, res: Response) => {
 // Auth routes
 app.use("/auth", authRoutes);
 
-// User routes (protected)
-app.use("/", userRoutes);
-
 // AI Profile routes (protected)
 app.use("/me/ai-profile", aiProfileRoutes);
 
@@ -76,6 +77,21 @@ app.use("/network-codes", networkCodeRoutes);
 
 // Connection routes (protected)
 app.use("/connections", connectionRoutes);
+
+// Upload routes (protected)
+app.use("/upload", uploadRoutes);
+
+// Following routes (protected)
+app.use("/followings", followingRoutes);
+
+// QR Profile routes (protected)
+app.use("/qr-profiles", qrProfileRoutes);
+
+// User routes (protected)
+app.use("/users", userRoutes);
+
+// Event routes (protected)
+app.use("/events", eventRoutes);
 
 // 404 handler
 app.use((_req: Request, res: Response) => {

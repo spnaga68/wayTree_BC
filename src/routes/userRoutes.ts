@@ -42,6 +42,7 @@ router.get(
         website: user.website,
         location: user.location,
         oneLiner: user.oneLiner,
+        photoUrl: user.photoUrl,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       });
@@ -80,6 +81,7 @@ router.put(
         "website",
         "location",
         "oneLiner",
+        "photoUrl",
       ];
 
       // Filter out fields that are not allowed
@@ -154,6 +156,7 @@ router.put(
         website: user.website,
         location: user.location,
         oneLiner: user.oneLiner,
+        photoUrl: user.photoUrl,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       });
@@ -162,6 +165,124 @@ router.put(
       res.status(500).json({
         error: "Internal Server Error",
         message: "Failed to update user profile",
+      });
+    }
+  }
+);
+
+/**
+ * GET /:id
+ * Get user profile by ID (protected)
+ */
+router.get(
+  "/:id",
+  authMiddleware,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const userId = req.params.id;
+      const user = await User.findById(userId).exec();
+
+      if (!user) {
+        res.status(404).json({
+          error: "Not Found",
+          message: "User not found",
+        });
+        return;
+      }
+
+      res.status(200).json({
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        primaryGoal: user.primaryGoal,
+        company: user.company,
+        website: user.website,
+        location: user.location,
+        oneLiner: user.oneLiner,
+        photoUrl: user.photoUrl,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      });
+    } catch (error) {
+      console.error("Error in GET /:id:", error);
+      res.status(500).json({
+        error: "Internal Server Error",
+        message: "Failed to fetch user profile",
+      });
+    }
+  }
+);
+
+/**
+ * POST /upload-profile-image
+ * Upload profile image as Base64 string (protected)
+ */
+router.post(
+  "/upload-profile-image",
+  authMiddleware,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const userId = req.user?.userId;
+
+      if (!userId) {
+        res.status(401).json({
+          error: "Unauthorized",
+          message: "User not authenticated",
+        });
+        return;
+      }
+
+      const { image } = req.body;
+
+      if (!image) {
+        res.status(400).json({
+          error: "Bad Request",
+          message: "No image data provided",
+        });
+        return;
+      }
+
+      // Basic validation for Base64 string
+      if (typeof image !== 'string' || !image.startsWith('data:image')) {
+        res.status(400).json({
+          error: "Bad Request",
+          message: "Invalid image format. Must be a Base64 data URL.",
+        });
+        return;
+      }
+
+      // Update user profile with new image URL (Base64 string)
+      const user = await User.findByIdAndUpdate(
+        userId,
+        { photoUrl: image },
+        { new: true }
+      ).exec();
+
+      if (!user) {
+        res.status(404).json({
+          error: "Not Found",
+          message: "User not found",
+        });
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Profile image uploaded successfully",
+        imageUrl: image, // Return the Base64 string
+        user: {
+          id: user._id.toString(),
+          email: user.email,
+          name: user.name,
+          photoUrl: user.photoUrl,
+        },
+      });
+    } catch (error: any) {
+      console.error("Error uploading profile image:", error);
+      res.status(500).json({
+        error: "Internal Server Error",
+        message: error.message || "Failed to upload profile image",
       });
     }
   }
