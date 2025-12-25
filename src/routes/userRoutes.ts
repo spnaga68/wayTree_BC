@@ -94,45 +94,9 @@ router.put(
         }
       }
 
-      // Validate role if provided
-      if (updates.role) {
-        const validRoles = [
-          "founder",
-          "investor",
-          "mentor",
-          "cxo",
-          "service",
-          "other",
-        ];
-        if (!validRoles.includes(updates.role)) {
-          res.status(400).json({
-            error: "Bad Request",
-            message: `Invalid role. Must be one of: ${validRoles.join(", ")}`,
-          });
-          return;
-        }
-      }
+      // Validate role if provided (REMOVED - now accepts any custom role)
+      // Validate primaryGoal if provided (REMOVED - now accepts any custom goal)
 
-      // Validate primaryGoal if provided
-      if (updates.primaryGoal) {
-        const validGoals = [
-          "fundraising",
-          "clients",
-          "cofounder",
-          "hiring",
-          "learn",
-          "other",
-        ];
-        if (!validGoals.includes(updates.primaryGoal)) {
-          res.status(400).json({
-            error: "Bad Request",
-            message: `Invalid primaryGoal. Must be one of: ${validGoals.join(
-              ", "
-            )}`,
-          });
-          return;
-        }
-      }
 
       // Check if semantic fields are being updated
       const semanticFields = [

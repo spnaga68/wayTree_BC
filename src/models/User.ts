@@ -3,14 +3,8 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface IUser extends Document {
   email: string;
   name: string;
-  role?: "founder" | "investor" | "mentor" | "cxo" | "service" | "other";
-  primaryGoal?:
-  | "fundraising"
-  | "clients"
-  | "cofounder"
-  | "hiring"
-  | "learn"
-  | "other";
+  role: string;  // ✅ Changed from enum to string - accepts any custom role
+  primaryGoal: string;  // ✅ Changed from enum to string - accepts any custom goal
   company?: string;
   website?: string;
   location?: string;
@@ -19,6 +13,7 @@ export interface IUser extends Document {
   interests?: string[];
   skills?: string[];
   profileEmbedding?: number[];
+  isBlocked?: boolean;
   connectionCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -41,13 +36,11 @@ const UserSchema = new Schema<IUser>(
     },
     role: {
       type: String,
-      enum: ["founder", "investor", "mentor", "cxo", "service", "other"],
-      required: false,
+      required: false,  // ✅ Optional - filled during signup
     },
     primaryGoal: {
       type: String,
-      enum: ["fundraising", "clients", "cofounder", "hiring", "learn", "other"],
-      required: false,
+      required: false,  // ✅ Optional - filled during signup
     },
     company: {
       type: String,
@@ -89,6 +82,10 @@ const UserSchema = new Schema<IUser>(
     connectionCount: {
       type: Number,
       default: 0,
+    },
+    isBlocked: {
+      type: Boolean,
+      default: false,
     },
   },
   {

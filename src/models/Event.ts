@@ -13,12 +13,18 @@ export interface IEvent extends Document {
     createdBy: mongoose.Types.ObjectId;
     attendees: mongoose.Types.ObjectId[];
     eventEmbedding?: number[];
+    attachments?: {
+        url: string;
+        name: string;
+        type?: string;
+    }[];
     createdAt: Date;
     updatedAt: Date;
 }
 
 const eventSchema = new Schema<IEvent>(
     {
+        // ... existing fields ...
         name: {
             type: String,
             required: true,
@@ -49,6 +55,13 @@ const eventSchema = new Schema<IEvent>(
             {
                 type: String,
             },
+        ],
+        attachments: [
+            {
+                url: { type: String, required: true },
+                name: { type: String, required: true },
+                type: { type: String }
+            }
         ],
         tags: [
             {

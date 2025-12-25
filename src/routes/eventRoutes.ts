@@ -1,4 +1,5 @@
 import { Router, Response } from "express";
+import mongoose from "mongoose";
 import { authMiddleware } from "../middleware/authMiddleware";
 import { AuthRequest } from "../types";
 import { Event } from "../models/Event";
@@ -50,7 +51,6 @@ router.post(
                 location,
                 photos: photos || [],
                 videos: videos || [],
-                tags: tags || [],
                 tags: tags || [],
                 createdBy: req.user.userId,
             });
@@ -164,15 +164,14 @@ router.get(
             // Populate createdBy (since aggregate returns raw IDs)
             await Event.populate(events, { path: "createdBy", select: "name photoUrl role company" });
 
-            // Post-processing: Log scores & Add isJoined & FILTER
+            // Post-processing: Log scores & Add isJoined
+            // Show ALL events sorted by score (descending order)
             const userId = req.user.userId;
-            const MIN_RELEVANCE_SCORE = 0.65; // Stricter threshold based on user feedback (0.61 was too loose)
 
             const processedEvents = events
                 .map((event: any) => {
-                    const isRelevant = event.score > MIN_RELEVANCE_SCORE;
-                    const logIcon = isRelevant ? "✅" : "❌";
-                    console.log(`${logIcon} Event: "${event.name}" | Score: ${event.score.toFixed(4)} ${!isRelevant ? '(Filtered Out)' : ''}`);
+                    // Log all events with their scores
+                    console.log(`📊 Event: "${event.name}" | Score: ${event.score.toFixed(4)}`);
 
                     return {
                         ...event,
@@ -181,9 +180,10 @@ router.get(
                             : false
                     };
                 })
-                .filter((event: any) => event.score > MIN_RELEVANCE_SCORE); // <--- HARD FILTER
+            // Already sorted by score (descending) from $vectorSearch
+            // No filtering - show ALL events
 
-            console.log(`ℹ️ Returning ${processedEvents.length}/${events.length} events after filtering (Threshold: ${MIN_RELEVANCE_SCORE})`);
+            console.log(`ℹ️ Returning ${processedEvents.length} events sorted by relevance score (descending)`);
 
             res.status(200).json({
                 message: "Events retrieved successfully (Personalized)",
@@ -225,7 +225,7 @@ router.get(
 
             // Add isJoined field for current user
             const userId = req.user?.userId;
-            const eventObj = event.toObject();
+            const eventObj: any = event.toObject();
             eventObj.isJoined = userId
                 ? event.attendees.some(attendee => attendee.toString() === userId)
                 : false;
@@ -586,5 +586,4 @@ router.post(
         }
     }
 );
-
 export default router;

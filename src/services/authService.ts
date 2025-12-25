@@ -75,9 +75,10 @@ export const createOtpRequest = async (email: string): Promise<string> => {
  */
 export const verifyOtpAndGetUser = async (
   email: string,
-  otp: string
+  otp: string,
+  shouldConsume: boolean = true
 ): Promise<{ user: any; isNewUser: boolean } | null> => {
-  console.log(`🔍 Verifying OTP for ${email}: ${otp}`);
+  console.log(`🔍 Verifying OTP for ${email}: ${otp} (consume: ${shouldConsume})`);
 
   // Find the latest OTP request for this email
   const otpRequest = await OtpRequest.findOne({ email })
@@ -104,23 +105,29 @@ export const verifyOtpAndGetUser = async (
     return null;
   }
 
-  // Mark OTP as consumed
-  otpRequest.consumed = true;
-  await otpRequest.save();
+  // Mark OTP as consumed if requested
+  if (shouldConsume) {
+    otpRequest.consumed = true;
+    await otpRequest.save();
+  }
 
   // Check if user exists
+  console.log(`🔍 Searching for user with email: ${email}`);
   let user = await User.findOne({ email }).exec();
   let isNewUser = false;
 
   if (!user) {
     // Create new user
+    console.log(`✅ User NOT found. Creating new user for: ${email}`);
     user = await User.create({
       email,
       name: "",
-      role: undefined,
-      primaryGoal: undefined,
+      role: undefined,  // Optional - will be filled in SignupDetailsScreen
+      primaryGoal: undefined,  // Optional - will be filled in SignupDetailsScreen
     });
     isNewUser = true;
+    console.log(`✅ New user created with ID: ${user._id}`);
+    console.log(`✅ isNewUser = ${isNewUser}`);
 
     // Send welcome email to new users
     try {
@@ -129,13 +136,21 @@ export const verifyOtpAndGetUser = async (
       console.error("Failed to send welcome email:", error);
       // Don't fail signup if welcome email fails
     }
+  } else {
+    console.log(`⚠️ User FOUND in database!`);
+    console.log(`   - User ID: ${user._id}`);
+    console.log(`   - Email: ${user.email}`);
+    console.log(`   - Name: "${user.name}"`);
+    console.log(`   - Role: ${user.role}`);
+    console.log(`✅ isNewUser = ${isNewUser} (user already exists)`);
   }
 
   return { user, isNewUser };
 };
 
 /**
- * Generate JWT token for user
+ * Generate JWT token for user (DEPRECATED - use tokenService instead)
+ * @deprecated Use generateAccessToken from tokenService
  */
 export const generateJwt = (userId: string, email: string): string => {
   const payload = {

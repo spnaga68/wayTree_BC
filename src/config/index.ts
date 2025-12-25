@@ -9,9 +9,11 @@ interface Config {
   otpExpiryMinutes: number;
   otpCodeLength: number;
   nodeEnv: string;
-  appUrl: string;
+  apiBaseUrl: string;
+  frontendUrl: string;
   appMode: "development" | "production";
   debugMode: boolean;
+  corsOrigin: string[];
   smtp: {
     host: string;
     port: number;
@@ -31,10 +33,19 @@ const config: Config = {
   otpExpiryMinutes: parseInt(process.env.OTP_EXPIRY_MINUTES || "10", 10),
   otpCodeLength: parseInt(process.env.OTP_CODE_LENGTH || "6", 10),
   nodeEnv: process.env.NODE_ENV || "development",
-  appUrl: process.env.APP_URL || "http://localhost:3000",
+
+  // API and Frontend URLs (configurable for deployment)
+  apiBaseUrl: process.env.API_BASE_URL || "http://localhost:3000",
+  frontendUrl: process.env.FRONTEND_URL || "http://localhost:8080",
+
   appMode:
     (process.env.APP_MODE as "development" | "production") || "development",
   debugMode: process.env.DEBUG_MODE === "true",
+
+  // CORS Origins (comma-separated in .env)
+  corsOrigin: process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(",").map(origin => origin.trim())
+    : ["http://localhost:3000", "http://localhost:8080", "http://localhost:5000"],
 
   // SMTP Configuration
   smtp: {
@@ -55,6 +66,16 @@ if (
   config.jwtSecret === "your-secret-key-change-in-production"
 ) {
   throw new Error("JWT_SECRET must be set in production environment");
+}
+
+// Log configuration (only in development)
+if (config.nodeEnv === "development" && config.debugMode) {
+  console.log("📋 Configuration loaded:");
+  console.log(`   - Environment: ${config.nodeEnv}`);
+  console.log(`   - API Base URL: ${config.apiBaseUrl}`);
+  console.log(`   - Frontend URL: ${config.frontendUrl}`);
+  console.log(`   - Port: ${config.port}`);
+  console.log(`   - CORS Origins: ${config.corsOrigin.join(", ")}`);
 }
 
 export default config;

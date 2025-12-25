@@ -9,6 +9,7 @@ export interface IConnection extends Document {
   autoConnected: boolean; // Whether it was auto-connected due to autoConnect flag
   connectionDate: Date;
   message?: string; // Optional message from requestor
+  isBlocked?: boolean; // Whether the user is blocked by admin
   createdAt: Date;
   updatedAt: Date;
 }
@@ -52,6 +53,10 @@ const connectionSchema = new Schema<IConnection>(
       type: String,
       trim: true,
       default: "",
+    },
+    isBlocked: {
+      type: Boolean,
+      default: false,
     },
   },
   {

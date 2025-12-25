@@ -29,7 +29,7 @@ app.use(helmet());
 // CORS
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || "*",
+    origin: config.corsOrigin,
     credentials: true,
   })
 );
@@ -102,6 +102,21 @@ app.use((_req: Request, res: Response) => {
   res.status(404).json({
     error: "Not Found",
     message: "Route not found",
+  });
+});
+
+// Global error handler
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: Error, _req: Request, res: Response, _next: express.NextFunction) => {
+  console.error("❌ Unhandled Error:", err);
+
+  const statusCode = (err as any).statusCode || 500;
+  const message = err.message || "Internal Server Error";
+
+  res.status(statusCode).json({
+    error: config.nodeEnv === "production" ? "Internal Server Error" : err.name,
+    message: config.nodeEnv === "production" ? "Something went wrong" : message,
+    ...(config.nodeEnv !== "production" && { stack: err.stack }),
   });
 });
 

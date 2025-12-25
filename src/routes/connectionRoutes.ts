@@ -114,7 +114,20 @@ router.post(
           id: existingConnection._id,
           status: existingConnection.status,
           autoConnected: existingConnection.autoConnected,
+          isBlocked: existingConnection.isBlocked,
         });
+
+        // Check if user is blocked
+        if (existingConnection.isBlocked) {
+          console.log('🚫 BACKEND: User is BLOCKED by admin');
+          res.status(403).json({
+            error: "Blocked",
+            message: "This network code is blocked by the admin. Please contact support.",
+            isBlocked: true,
+          });
+          return;
+        }
+
         res.status(409).json({
           error: "Connection Exists",
           message: `Connection already exists with status: ${existingConnection.status}`,
@@ -123,6 +136,7 @@ router.post(
         return;
       }
       console.log('✅ BACKEND: No existing connection - creating new one');
+
 
       // Determine initial status based on autoConnect
       const initialStatus = networkCode.autoConnect ? "accepted" : "pending";
@@ -503,14 +517,16 @@ router.get(
         return;
       }
 
-      // Get only accepted connections
+      // Get only accepted connections that are not blocked
       const connections = await Connection.find({
         codeId,
         status: "accepted",
+        isBlocked: { $ne: true },
       })
         .populate("requestorId", "name email role company location")
         .sort({ connectionDate: -1 })
         .lean();
+
 
       // Format response to show member details
       const members = connections.map((connection) => ({
