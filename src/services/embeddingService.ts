@@ -25,26 +25,26 @@ export const EmbeddingService = {
      */
     generateEmbedding: async (text: string): Promise<number[]> => {
         try {
-            console.log("ℹ️ Embedding generation disabled to prevent OOM on free tier. Returning zero vector.");
-            // Return 768 zeros (matches mpnet-base-v2 dimension)
-            return new Array(768).fill(0);
-
-            /* 
-            // REAL IMPLEMENTATION - DISABLED FOR STABILITY
             if (!text || !text.trim()) {
                 console.log("ℹ️ No text to embed");
                 return [];
             }
 
             const extractor = await getExtractor();
+
+            // Generate embedding
+            // pooling: 'mean' averages the token embeddings to get a single sentence embedding
+            // normalize: true ensures the vector has length 1 (good for cosine similarity)
             const output = await extractor(text, { pooling: "mean", normalize: true });
+
+            // Convert Tensor to plain array
+            // output.data is a Float32Array
             const embedding = Array.from(output.data) as number[];
+
             return embedding;
-            */
         } catch (error) {
             console.error("Error generating local embedding:", error);
-            // Fallback to zeros even on error
-            return new Array(768).fill(0);
+            throw error; // Re-throw to allow caller to decide flow
         }
     },
 

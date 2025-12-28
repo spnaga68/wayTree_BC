@@ -48,6 +48,28 @@ router.post(
                 return;
             }
 
+            // Generate Embedding FIRST (before saving to DB)
+            let eventEmbedding: number[] = [];
+            try {
+                const { EmbeddingService } = await import("../services/embeddingService");
+                // Create a temporary object for text generation
+                const tempEvent = { name, headline, description, tags, location };
+                const eventText = EmbeddingService.createEventText(tempEvent);
+
+                if (eventText) {
+                    console.log(`📝 Generating embedding for new event: "${name}"`);
+                    eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+                    console.log(`✅ Embedding generated. Dimension: ${eventEmbedding.length}`);
+                }
+            } catch (err) {
+                console.error("❌ Failed to generate embedding:", err);
+                res.status(500).json({
+                    error: "Internal Server Error",
+                    message: "Failed to generate AI embedding for event. Please try again."
+                });
+                return; // Stop execution if embedding fails (per user request)
+            }
+
             const event = await Event.create({
                 name,
                 headline,
@@ -58,25 +80,8 @@ router.post(
                 videos: videos || [],
                 tags: tags || [],
                 createdBy: req.user.userId,
+                eventEmbedding: eventEmbedding // Store immediately
             });
-
-            // Generate Embedding Immediately
-            try {
-                const { EmbeddingService } = await import("../services/embeddingService");
-                const eventText = EmbeddingService.createEventText(event);
-                if (eventText) {
-                    console.log(`📝 Generating embedding for new event: "${event.name}"`);
-                    const eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
-                    if (eventEmbedding && eventEmbedding.length > 0) {
-                        event.eventEmbedding = eventEmbedding;
-                        await event.save();
-                        console.log("✅ Event embedding generated and saved.");
-                    }
-                }
-            } catch (err) {
-                console.error("❌ Failed to generate embedding for new event:", err);
-                // Non-blocking, event is still created
-            }
 
             res.status(201).json({
                 message: "Event created successfully",
