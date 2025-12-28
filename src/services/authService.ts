@@ -40,7 +40,7 @@ export const verifyOtpHash = async (
 export const createOtpRequest = async (email: string): Promise<string> => {
   // Use static OTP "123456" for ALL environments as per user request
   // This bypasses the email service failures.
-  const otp = "123456"; 
+  const otp = "123456";
   const otpHash = await hashOtp(otp);
   const expiresAt = new Date(Date.now() + config.otpExpiryMinutes * 60 * 1000);
 
@@ -64,11 +64,11 @@ export const createOtpRequest = async (email: string): Promise<string> => {
     }
   } else {
   */
-    // Log to console for now (mimicking Dev mode behavior even in Prod)
-    console.log("\n================================================");
-    console.log(`📧 [TEMP BYPASS] OTP for ${email}: ${otp}`);
-    console.log(`Expires at: ${expiresAt.toISOString()}`);
-    console.log("================================================\n");
+  // Log to console for now (mimicking Dev mode behavior even in Prod)
+  console.log("\n================================================");
+  console.log(`📧 [TEMP BYPASS] OTP for ${email}: ${otp}`);
+  console.log(`Expires at: ${expiresAt.toISOString()}`);
+  console.log("================================================\n");
   /* } */
 
   return otp;
@@ -134,12 +134,14 @@ export const verifyOtpAndGetUser = async (
     console.log(`✅ isNewUser = ${isNewUser}`);
 
     // Send welcome email to new users
+    /* Temporarily bypassed for production to prevent timeouts
     try {
       await emailService.sendWelcomeEmail(email, user.name);
     } catch (error) {
       console.error("Failed to send welcome email:", error);
       // Don't fail signup if welcome email fails
     }
+    */
   } else {
     console.log(`⚠️ User FOUND in database!`);
     console.log(`   - User ID: ${user._id}`);
