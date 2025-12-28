@@ -52,6 +52,7 @@
     "@typescript-eslint/eslint-plugin": "^6.17.0",
     "@typescript-eslint/parser": "^6.17.0",
     "eslint": "^8.56.0",
+    "rimraf": "^6.1.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3"
   },
