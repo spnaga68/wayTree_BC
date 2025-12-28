@@ -15,7 +15,12 @@ router.post(
     authMiddleware,
     async (req: AuthRequest, res: Response): Promise<void> => {
         try {
+            console.log('📥 POST /events Request received');
+            console.log('   - User:', req.user?.userId);
+            console.log('   - Body:', JSON.stringify(req.body));
+
             if (!req.user) {
+                console.log('❌ Unauthorized: No user');
                 res.status(401).json({
                     error: "Unauthorized",
                     message: "User not authenticated",
@@ -128,67 +133,84 @@ router.get(
             // 2. VECTOR SEARCH: If embedding exists, return personalized list
             console.log(`🔍 semantic search for user: ${user.name} (${user.role})`);
 
-            const events = await Event.aggregate([
-                {
-                    $vectorSearch: {
-                        index: "vector_index",
-                        path: "eventEmbedding",
-                        queryVector: user.profileEmbedding,
-                        numCandidates: 100, // Search pool
-                        limit: 20           // Return top 20 relevant
+            try {
+                const events = await Event.aggregate([
+                    {
+                        $vectorSearch: {
+                            index: "vector_index",
+                            path: "eventEmbedding",
+                            queryVector: user.profileEmbedding,
+                            numCandidates: 100, // Search pool
+                            limit: 20           // Return top 20 relevant
+                        }
+                    },
+                    {
+                        $match: {
+                            isVerified: true,
+                            dateTime: { $gte: new Date() }
+                        }
+                    },
+                    {
+                        $project: {
+                            name: 1,
+                            location: 1,
+                            description: 1,
+                            dateTime: 1,
+                            headline: 1,
+                            photos: 1,
+                            tags: 1,
+                            isVerified: 1,
+                            createdBy: 1,
+                            attendees: 1,
+                            score: { $meta: "vectorSearchScore" }
+                        }
                     }
-                },
-                {
-                    $match: {
-                        isVerified: true,
-                        dateTime: { $gte: new Date() }
-                    }
-                },
-                {
-                    $project: {
-                        name: 1,
-                        location: 1,
-                        description: 1,
-                        dateTime: 1,
-                        headline: 1,
-                        photos: 1,
-                        tags: 1,
-                        isVerified: 1,
-                        createdBy: 1,
-                        attendees: 1,
-                        score: { $meta: "vectorSearchScore" }
-                    }
-                }
-            ]);
+                ]);
 
-            // Populate createdBy (since aggregate returns raw IDs)
-            await Event.populate(events, { path: "createdBy", select: "name photoUrl role company" });
+                // Populate createdBy (since aggregate returns raw IDs)
+                await Event.populate(events, { path: "createdBy", select: "name photoUrl role company" });
 
-            // Post-processing: Log scores & Add isJoined
-            // Show ALL events sorted by score (descending order)
-            const userId = req.user.userId;
+                // Post-processing: Log scores & Add isJoined
+                const userId = req.user.userId;
 
-            const processedEvents = events
-                .map((event: any) => {
-                    // Log all events with their scores
-                    console.log(`📊 Event: "${event.name}" | Score: ${event.score.toFixed(4)}`);
+                const processedEvents = events
+                    .map((event: any) => {
+                        // Log all events with their scores
+                        console.log(`📊 Event: "${event.name}" | Score: ${event.score.toFixed(4)}`);
 
-                    return {
-                        ...event,
-                        isJoined: event.attendees
-                            ? event.attendees.some((a: any) => a.toString() === userId)
-                            : false
-                    };
-                })
-            // Already sorted by score (descending) from $vectorSearch
-            // No filtering - show ALL events
+                        return {
+                            ...event,
+                            isJoined: event.attendees
+                                ? event.attendees.some((a: any) => a.toString() === userId)
+                                : false
+                        };
+                    });
 
-            console.log(`ℹ️ Returning ${processedEvents.length} events sorted by relevance score (descending)`);
+                console.log(`ℹ️ Returning ${processedEvents.length} events sorted by relevance score (descending)`);
 
-            res.status(200).json({
-                message: "Events retrieved successfully (Personalized)",
-                data: processedEvents,
-            });
+                res.status(200).json({
+                    message: "Events retrieved successfully (Personalized)",
+                    data: processedEvents,
+                });
+            } catch (vectorError) {
+                console.error("⚠️ Vector search failed (likely missing index). Falling back to standard list.", vectorError);
+
+                // FALLBACK Logic duplicated here
+                const events = await Event.find({ isVerified: true })
+                    .populate("createdBy", "name photoUrl role company")
+                    .sort({ dateTime: 1 });
+
+                const userId = req.user.userId;
+                const eventsWithData = events.map(event => ({
+                    ...event.toObject(),
+                    isJoined: event.attendees.some(a => a.toString() === userId)
+                }));
+
+                res.status(200).json({
+                    message: "Events retrieved successfully (Standard Fallback)",
+                    data: eventsWithData,
+                });
+            }
 
         } catch (error: any) {
             console.error("Error fetching events:", error);
