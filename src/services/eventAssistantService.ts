@@ -100,7 +100,7 @@ Do not include markdown formatting (like \`\`\`json) outside the JSON.`;
         }
     },
 
-    getSuggestedQuestions: (event: any, userProfile: any): string[] => {
+    getSuggestedQuestions: (_event: any, _userProfile: any): string[] => {
         return [
             "What is the main agenda?",
             "Who is this event for?",

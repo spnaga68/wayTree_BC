@@ -130,7 +130,7 @@ router.post(
             eventDoc.photos = photos || [];
             eventDoc.videos = videos || [];
             eventDoc.tags = tags || [];
-            eventDoc.createdBy = req.user.userId;
+            eventDoc.createdBy = new mongoose.Types.ObjectId(req.user.userId);
             eventDoc.eventEmbedding = eventEmbedding;
 
             // Store PDF data (only for events)
