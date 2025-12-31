@@ -43,6 +43,7 @@ router.get(
         location: user.location,
         oneLiner: user.oneLiner,
         photoUrl: user.photoUrl,
+        phoneNumber: user.phoneNumber,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       });
@@ -84,6 +85,7 @@ router.put(
         "location",
         "oneLiner",
         "photoUrl",
+        "phoneNumber",
         "interests",
         "skills",
       ];
@@ -139,6 +141,9 @@ router.put(
         }
       }
 
+      console.log('💾 Saving updates to MongoDB:', updates);
+      console.log('👤 User ID:', req.user.userId);
+
       const updatedUser = await User.findByIdAndUpdate(
         req.user.userId,
         { $set: updates },
@@ -146,12 +151,22 @@ router.put(
       ).exec();
 
       if (!updatedUser) {
+        console.error('❌ User not found after update attempt');
         res.status(404).json({
           error: "Not Found",
           message: "User not found",
         });
         return;
       }
+
+      console.log('✅ User updated successfully in MongoDB');
+      console.log('📝 Updated user data:', {
+        id: updatedUser._id.toString(),
+        name: updatedUser.name,
+        role: updatedUser.role,
+        primaryGoal: updatedUser.primaryGoal,
+        phoneNumber: updatedUser.phoneNumber,
+      });
 
       // Send response immediately
       res.status(200).json({
@@ -165,10 +180,16 @@ router.put(
         location: updatedUser.location,
         oneLiner: updatedUser.oneLiner,
         photoUrl: updatedUser.photoUrl,
+        phoneNumber: updatedUser.phoneNumber,
         createdAt: updatedUser.createdAt,
         updatedAt: updatedUser.updatedAt,
       });
     } catch (error) {
+      console.error('❌ Error in PUT /me:', error);
+      console.error('Error details:', {
+        message: (error as Error).message,
+        stack: (error as Error).stack,
+      });
       res.status(500).json({
         error: "Internal Server Error",
         message: "Failed to update user profile",
@@ -209,6 +230,7 @@ router.get(
         location: user.location,
         oneLiner: user.oneLiner,
         photoUrl: user.photoUrl,
+        phoneNumber: user.phoneNumber,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       });

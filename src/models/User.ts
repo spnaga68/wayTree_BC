@@ -10,6 +10,7 @@ export interface IUser extends Document {
   location?: string;
   oneLiner?: string;
   photoUrl?: string;
+  phoneNumber?: string;
   interests?: string[];
   skills?: string[];
   profileEmbedding?: number[];
@@ -62,6 +63,10 @@ const UserSchema = new Schema<IUser>(
       type: String,
       trim: true,
     },
+    phoneNumber: {
+      type: String,
+      trim: true,
+    },
     interests: [
       {
         type: String,
@@ -97,4 +102,4 @@ const UserSchema = new Schema<IUser>(
 UserSchema.index({ name: 1 });
 UserSchema.index({ name: "text", email: "text", company: "text" });
 
-export const User = mongoose.model<IUser>("User", UserSchema);
+export const User = mongoose.model<IUser>("User", UserSchema, "users");

@@ -28,7 +28,7 @@ interface Config {
 
 const config: Config = {
   port: parseInt(process.env.PORT || "3000", 10),
-  mongodbUri: process.env.MONGODB_URI || "mongodb://localhost:27017/goalnet",
+  mongodbUri: process.env.MONGODB_URI || "",
   jwtSecret: process.env.JWT_SECRET || "your-secret-key-change-in-production",
   otpExpiryMinutes: parseInt(process.env.OTP_EXPIRY_MINUTES || "10", 10),
   otpCodeLength: parseInt(process.env.OTP_CODE_LENGTH || "6", 10),
