@@ -34,3 +34,11 @@ coverage/
 # Temp files
 tmp/
 temp/
+# Environment variables
+.env
+
+# Node modules
+node_modules/
+
+# Build output
+dist/

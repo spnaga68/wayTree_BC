@@ -73,7 +73,7 @@ const networkCodeSchema = new Schema<INetworkCode>(
 );
 
 // Index for faster querying
-// networkCodeSchema.index({ codeId: 1 }); // Removed to prevent duplicate index warning
+
 networkCodeSchema.index({ keywords: 1 });
 networkCodeSchema.index({ userId: 1 });
 
