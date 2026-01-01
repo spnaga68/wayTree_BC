@@ -185,126 +185,322 @@ router.get(
                 return;
             }
 
-            const User = (await import("../models/User")).User;
-            const user = await User.findById(req.user.userId);
+            const { my, all } = req.query;
+            const userId = req.user.userId;
+            const userRole = req.user.role;
 
-            // 1. STANDARD FALLBACK: If no embedding, return chronological list
-            if (!user || !user.profileEmbedding || user.profileEmbedding.length === 0) {
-                console.log("ℹ️ No profile embedding found. Returning standard event list.");
-                const events = await Event.find({ isVerified: true })
-                    .populate("createdBy", "name photoUrl role company")
-                    .sort({ dateTime: 1 });
+            const filter: any = {};
 
-                // Add isJoined logic
-                const userId = req.user.userId;
-                const eventsWithData = events.map(event => ({
-                    ...event.toObject(),
-                    isEvent: event.isEvent,
-                    isCommunity: event.isCommunity,
-                    isJoined: event.attendees.some(a => a.toString() === userId)
-                }));
-
-                res.status(200).json({
-                    message: "Events retrieved successfully (Standard)",
-                    data: eventsWithData,
-                });
-                return;
+            if (all === 'true' && userRole === 'admin') {
+                // Admin sees everything
+            } else if (my === 'true') {
+                // User sees their own events (verified or not)
+                filter.createdBy = new mongoose.Types.ObjectId(userId);
+            } else {
+                // Default: only verified events
+                filter.isVerified = true;
             }
 
-            // 2. VECTOR SEARCH: If embedding exists, return personalized list
-            console.log(`🔍 semantic search for user: ${user.name} (${user.role})`);
+            const User = (await import("../models/User")).User;
+            const user = await User.findById(userId);
 
-            try {
-                const events = await Event.aggregate([
-                    {
-                        $vectorSearch: {
-                            index: "vector_index",
-                            path: "eventEmbedding",
-                            queryVector: user.profileEmbedding,
-                            numCandidates: 100, // Search pool
-                            limit: 20           // Return top 20 relevant
+            // If it's a standard request (not 'my' or 'all'), try vector search
+            if (!my && !all && user && user.profileEmbedding && user.profileEmbedding.length > 0) {
+                console.log(`🔍 semantic search for user: ${user.name} (${user.role})`);
+                try {
+                    const events = await Event.aggregate([
+                        {
+                            $vectorSearch: {
+                                index: "vector_index",
+                                path: "eventEmbedding",
+                                queryVector: user.profileEmbedding,
+                                numCandidates: 100,
+                                limit: 20
+                            }
+                        },
+                        {
+                            $match: {
+                                isVerified: true,
+                                dateTime: { $gte: new Date() }
+                            }
+                        },
+                        {
+                            $project: {
+                                name: 1,
+                                location: 1,
+                                description: 1,
+                                dateTime: 1,
+                                headline: 1,
+                                photos: 1,
+                                tags: 1,
+                                isVerified: 1,
+                                createdBy: 1,
+                                attendees: 1,
+                                isEvent: 1,
+                                isCommunity: 1,
+                                score: { $meta: "vectorSearchScore" }
+                            }
                         }
-                    },
-                    {
-                        $match: {
-                            isVerified: true,
-                            dateTime: { $gte: new Date() }
-                        }
-                    },
-                    {
-                        $project: {
-                            name: 1,
-                            location: 1,
-                            description: 1,
-                            dateTime: 1,
-                            headline: 1,
-                            photos: 1,
-                            tags: 1,
-                            isVerified: 1,
-                            createdBy: 1,
-                            attendees: 1,
-                            isEvent: 1,
-                            isCommunity: 1,
-                            score: { $meta: "vectorSearchScore" }
-                        }
-                    }
-                ]);
+                    ]);
 
-                // Populate createdBy (since aggregate returns raw IDs)
-                await Event.populate(events, { path: "createdBy", select: "name photoUrl role company" });
+                    await Event.populate(events, { path: "createdBy", select: "name photoUrl role company" });
 
-                // PRODUCTION-READY: Use vector scores with smart threshold
-                const userId = req.user.userId;
-                const minScore = 0.50; // 50% minimum match (wider range)
-
-                const processedEvents = events
-                    .filter((event: any) => event.score >= minScore) // Filter low matches
-                    .map((event: any) => {
-                        const matchPercentage = Math.round(event.score * 100);
-                        console.log(`📊 Event: "${event.name}" | Match: ${matchPercentage}%`);
-
-                        return {
+                    const minScore = 0.50;
+                    const processedEvents = events
+                        .filter((event: any) => event.score >= minScore)
+                        .map((event: any) => ({
                             ...event,
-                            matchScore: matchPercentage,
+                            matchScore: Math.round(event.score * 100),
                             isJoined: event.attendees
                                 ? event.attendees.some((a: any) => a.toString() === userId)
                                 : false
-                        };
+                        }));
+
+                    res.status(200).json({
+                        message: "Events retrieved successfully (Smart Recommendations)",
+                        data: processedEvents,
                     });
-
-                console.log(`ℹ️ Returning ${processedEvents.length} recommended events (${minScore * 100}%+ match)`);
-
-                res.status(200).json({
-                    message: "Events retrieved successfully (Smart Recommendations)",
-                    data: processedEvents,
-                });
-            } catch (vectorError) {
-                console.error("⚠️ Vector search failed (likely missing index). Falling back to standard list.", vectorError);
-
-                // FALLBACK Logic duplicated here
-                const events = await Event.find({ isVerified: true })
-                    .populate("createdBy", "name photoUrl role company")
-                    .sort({ dateTime: 1 });
-
-                const userId = req.user.userId;
-                const eventsWithData = events.map(event => ({
-                    ...event.toObject(),
-                    isEvent: event.isEvent,
-                    isCommunity: event.isCommunity,
-                    isJoined: event.attendees.some(a => a.toString() === userId)
-                }));
-
-                res.status(200).json({
-                    message: "Events retrieved successfully (Standard Fallback)",
-                    data: eventsWithData,
-                });
+                    return;
+                } catch (vectorError) {
+                    console.error("⚠️ Vector search failed. Falling back to standard list.", vectorError);
+                }
             }
+
+            // Standard find for 'my', 'all', or fallback
+            const events = await Event.find(filter)
+                .populate("createdBy", "name photoUrl role company")
+                .sort({ dateTime: 1 });
+
+            const eventsWithData = events.map(event => ({
+                ...event.toObject(),
+                isJoined: event.attendees.some(a => a.toString() === userId)
+            }));
+
+            res.status(200).json({
+                message: "Events retrieved successfully",
+                data: eventsWithData,
+            });
 
         } catch (error: any) {
             console.error("Error fetching events:", error);
             res.status(500).json({
                 error: "Internal Server Error",
                 message: "Failed to fetch events",
+            });
+        }
+    }
+);
+
+/**
+ * GET /admin/pending
+ * Get pending events for admin approval
+ */
+router.get(
+    "/admin/pending",
+    authMiddleware,
+    async (req: AuthRequest, res: Response): Promise<void> => {
+        try {
+            if (!req.user || req.user.role !== 'admin') {
+                res.status(403).json({ error: "Forbidden", message: "Admin access required" });
+                return;
+            }
+
+            const events = await Event.find({ isVerified: false })
+                .populate("createdBy", "name photoUrl role company")
+                .sort({ createdAt: -1 });
+
+            res.status(200).json({
+                message: "Pending events retrieved successfully",
+                data: events,
+            });
+        } catch (error: any) {
+            console.error("Error fetching pending events:", error);
+            res.status(500).json({
+                error: "Internal Server Error",
+                message: "Failed to fetch pending events",
+            });
+        }
+    }
+);
+
+/**
+ * PUT /admin/:id/verify
+ * Approve an event
+ */
+router.put(
+    "/admin/:id/verify",
+    authMiddleware,
+    async (req: AuthRequest, res: Response): Promise<void> => {
+        try {
+            if (!req.user || req.user.role !== 'admin') {
+                res.status(403).json({ error: "Forbidden", message: "Admin access required" });
+                return;
+            }
+
+            const { id } = req.params;
+
+            const baseEvent = await Event.findById(id);
+            if (!baseEvent) {
+                res.status(404).json({
+                    error: "Not Found",
+                    message: "Event not found",
+                });
+                return;
+            }
+
+            // Generate Embedding on verification
+            let eventEmbedding: number[] = [];
+            try {
+                const { EmbeddingService } = await import("../services/embeddingService");
+                const eventText = EmbeddingService.createEventText(baseEvent);
+                if (eventText) {
+                    eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+                }
+            } catch (err) {
+                console.error("Failed to generate embedding for event:", err);
+            }
+
+            const event = await Event.findByIdAndUpdate(
+                id,
+                { isVerified: true, eventEmbedding },
+                { new: true }
+            );
+
+            res.status(200).json({
+                message: "Event verified successfully",
+                data: event,
+            });
+        } catch (error: any) {
+            console.error("Error verifying event:", error);
+            res.status(500).json({
+                error: "Internal Server Error",
+                message: "Failed to verify event",
+            });
+        }
+    }
+);
+
+/**
+ * DELETE /admin/:id/reject
+ * Reject an event (delete it)
+ */
+router.delete(
+    "/admin/:id/reject",
+    authMiddleware,
+    async (req: AuthRequest, res: Response): Promise<void> => {
+        try {
+            if (!req.user || req.user.role !== 'admin') {
+                res.status(403).json({ error: "Forbidden", message: "Admin access required" });
+                return;
+            }
+
+            const { id } = req.params;
+            await Event.findByIdAndDelete(id);
+
+            res.status(200).json({
+                message: "Event rejected and deleted successfully",
+            });
+        } catch (error: any) {
+            console.error("Error rejecting event:", error);
+            res.status(500).json({
+                error: "Internal Server Error",
+                message: "Failed to reject event",
+            });
+        }
+    }
+);
+
+/**
+ * GET /recommendations
+ * Get recommended events based on user profile
+ */
+router.get(
+    "/recommendations",
+    authMiddleware,
+    async (req: AuthRequest, res: Response): Promise<void> => {
+        try {
+            if (!req.user) {
+                res.status(401).json({ error: "Unauthorized" });
+                return;
+            }
+
+            const User = (await import("../models/User")).User;
+            const user = await User.findById(req.user.userId);
+
+            if (!user || !user.profileEmbedding || user.profileEmbedding.length === 0) {
+                // Fallback to latest events if no embedding
+                const events = await Event.find({
+                    isVerified: true,
+                    dateTime: { $gte: new Date() }
+                })
+                    .sort({ dateTime: 1 })
+                    .limit(10);
+
+                res.status(200).json({ message: "Fallback to latest events", data: events });
+                return;
+            }
+
+            // Vector Search Aggregation
+            const events = await Event.aggregate([
+                {
+                    $vectorSearch: {
+                        index: "vector_index", // Ensure this matches Atlas config
+                        path: "eventEmbedding",
+                        queryVector: user.profileEmbedding,
+                        numCandidates: 100,
+                        limit: 10
+                    }
+                },
+                {
+                    $match: {
+                        isVerified: true,
+                        dateTime: { $gte: new Date() }
+                    }
+                },
+                {
+                    $project: {
+                        name: 1,
+                        location: 1,
+                        description: 1,
+                        dateTime: 1,
+                        headline: 1,
+                        photos: 1,
+                        tags: 1,
+                        isVerified: 1,
+                        createdBy: 1,
+                        attendees: 1,
+                        score: { $meta: "vectorSearchScore" }
+                    }
+                }
+            ]);
+
+            console.log(`\n🔍 Recommendation Results for User: ${user.name}`);
+            console.log("=========================================");
+            if (events.length === 0) {
+                console.log("ℹ️ No relevant events found.");
+            } else {
+                events.forEach((event: any, index: number) => {
+                    const isRelevant = event.score > 0.6; // Threshold for explicit relevance logging
+                    const status = isRelevant ? "✅ RELEVANT" : "⚠️ LOW RELEVANCE";
+
+                    console.log(`\nEvent #${index + 1}: ${event.name}`);
+                    console.log(`   📍 Location: ${event.location}`);
+                    console.log(`   ★ Score: ${event.score.toFixed(4)}`);
+                    console.log(`   🏷️ Status: ${status}`);
+                });
+            }
+            console.log("=========================================\n");
+
+            res.status(200).json({
+                message: "Recommended events retrieved successfully",
+                data: events,
+            });
+
+        } catch (error: any) {
+            console.error("Error fetching recommendations:", error);
+            res.status(500).json({
+                error: "Internal Server Error",
+                message: "Failed to fetch recommendations",
             });
         }
     }
@@ -458,184 +654,6 @@ router.delete(
             res.status(500).json({
                 error: "Internal Server Error",
                 message: "Failed to delete event",
-            });
-        }
-    }
-);
-
-/**
- * GET /admin/pending
- * Get pending events for admin approval
- */
-/*
-router.get(
-    "/admin/pending",
-    async (req: AuthRequest, res: Response): Promise<void> => {
-        try {
-            // In a real app, add middleware to check if user is admin
-            const events = await Event.find({ isVerified: false })
-                .populate("createdBy", "name photoUrl role company")
-                .sort({ createdAt: -1 }); // Newest first
-
-            res.status(200).json({
-                message: "Pending events retrieved successfully",
-                data: events,
-            });
-        } catch (error: any) {
-            console.error("Error fetching pending events:", error);
-            res.status(500).json({
-                error: "Internal Server Error",
-                message: "Failed to fetch pending events",
-            });
-        }
-    }
-);
-*/
-
-/**
- * PUT /admin/:id/verify
- * Approve an event
- */
-/*
-router.put(
-    "/admin/:id/verify",
-    async (req: AuthRequest, res: Response): Promise<void> => {
-        try {
-            const { id } = req.params;
-
-            const baseEvent = await Event.findById(id);
-            if (!baseEvent) {
-                res.status(404).json({
-                    error: "Not Found",
-                    message: "Event not found",
-                });
-                return;
-            }
-
-            // Generate Embedding on verification
-            let eventEmbedding: number[] = [];
-            try {
-                const { EmbeddingService } = await import("../services/embeddingService");
-                const eventText = EmbeddingService.createEventText(baseEvent);
-                if (eventText) {
-                    eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
-                }
-            } catch (err) {
-                console.error("Failed to generate embedding for event:", err);
-            }
-
-            const event = await Event.findByIdAndUpdate(
-                id,
-                { isVerified: true, eventEmbedding },
-                { new: true }
-            );
-
-            res.status(200).json({
-                message: "Event verified successfully",
-                data: event,
-            });
-        } catch (error: any) {
-            console.error("Error verifying event:", error);
-            res.status(500).json({
-                error: "Internal Server Error",
-                message: "Failed to verify event",
-            });
-        }
-    }
-);
-*/
-
-/**
- * GET /recommendations
- * Get recommended events based on user profile
- */
-router.get(
-    "/recommendations",
-    authMiddleware,
-    async (req: AuthRequest, res: Response): Promise<void> => {
-        try {
-            if (!req.user) {
-                res.status(401).json({ error: "Unauthorized" });
-                return;
-            }
-
-            const User = (await import("../models/User")).User;
-            const user = await User.findById(req.user.userId);
-
-            if (!user || !user.profileEmbedding || user.profileEmbedding.length === 0) {
-                // Fallback to latest events if no embedding
-                const events = await Event.find({
-                    isVerified: true,
-                    dateTime: { $gte: new Date() }
-                })
-                    .sort({ dateTime: 1 })
-                    .limit(10);
-
-                res.status(200).json({ message: "Fallback to latest events", data: events });
-                return;
-            }
-
-            // Vector Search Aggregation
-            const events = await Event.aggregate([
-                {
-                    $vectorSearch: {
-                        index: "vector_index", // Ensure this matches Atlas config
-                        path: "eventEmbedding",
-                        queryVector: user.profileEmbedding,
-                        numCandidates: 100,
-                        limit: 10
-                    }
-                },
-                {
-                    $match: {
-                        isVerified: true,
-                        dateTime: { $gte: new Date() }
-                    }
-                },
-                {
-                    $project: {
-                        name: 1,
-                        location: 1,
-                        description: 1,
-                        dateTime: 1,
-                        headline: 1,
-                        photos: 1,
-                        tags: 1,
-                        isVerified: 1,
-                        createdBy: 1,
-                        attendees: 1,
-                        score: { $meta: "vectorSearchScore" }
-                    }
-                }
-            ]);
-
-            console.log(`\n🔍 Recommendation Results for User: ${user.name}`);
-            console.log("=========================================");
-            if (events.length === 0) {
-                console.log("ℹ️ No relevant events found.");
-            } else {
-                events.forEach((event: any, index: number) => {
-                    const isRelevant = event.score > 0.6; // Threshold for explicit relevance logging
-                    const status = isRelevant ? "✅ RELEVANT" : "⚠️ LOW RELEVANCE";
-
-                    console.log(`\nEvent #${index + 1}: ${event.name}`);
-                    console.log(`   📍 Location: ${event.location}`);
-                    console.log(`   ★ Score: ${event.score.toFixed(4)}`);
-                    console.log(`   🏷️ Status: ${status}`);
-                });
-            }
-            console.log("=========================================\n");
-
-            res.status(200).json({
-                message: "Recommended events retrieved successfully",
-                data: events,
-            });
-
-        } catch (error: any) {
-            console.error("Error fetching recommendations:", error);
-            res.status(500).json({
-                error: "Internal Server Error",
-                message: "Failed to fetch recommendations",
             });
         }
     }
