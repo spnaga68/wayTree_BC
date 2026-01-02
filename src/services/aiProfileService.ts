@@ -3,6 +3,14 @@ import { User } from "../models/User";
 import { Goal } from "../models/Goal";
 import { UserDocument } from "../models/Document";
 import mongoose from "mongoose";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const apiKey = process.env.GEMINI_API_KEY;
+const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+
 
 /**
  * Generate AI profile content based on user data
@@ -37,25 +45,82 @@ export const generateAiProfile = async (
     userId: new mongoose.Types.ObjectId(userId),
   });
 
-  // Generate AI content based on user data
-  // TODO: Replace with actual AI service (OpenAI, Anthropic, etc.)
-  const summary = generateSummary(user, activeGoals.length, documentCount);
-  const currentFocus = generateCurrentFocus(user, activeGoals);
-  const strengths = generateStrengths(user);
-  const highlights = generateHighlights(user, activeGoals);
+  // 3. Generate AI content using Gemini
+  if (!genAI) {
+    console.error("❌ GEMINI_API_KEY is missing for AI Profile generation.");
+    // Fallback to rule-based generation if AI is not configured
+    const summary = generateRuleBasedSummary(user, activeGoals.length, documentCount);
+    const currentFocus = generateRuleBasedCurrentFocus(user, activeGoals);
+    const strengths = generateRuleBasedStrengths(user);
+    const highlights = generateRuleBasedHighlights(user, activeGoals);
 
-  return {
-    summary,
-    currentFocus,
-    strengths,
-    highlights,
-  };
+    return { summary, currentFocus, strengths, highlights };
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+    const userProfileText = `
+      Name: ${user.name}
+      Role: ${user.role}
+      Company: ${user.company}
+      Location: ${user.location}
+      One-liner: ${user.oneLiner}
+      Interests: ${user.interests?.join(", ")}
+      Skills: ${user.skills?.join(", ")}
+      Primary Goal: ${user.primaryGoal}
+      Active Goals: ${activeGoals.map(g => g.title).join(", ")}
+      Documents count: ${documentCount}
+    `;
+
+    const prompt = `
+      You are an AI Bio Generator. Create a professional and engaging AI profile for the following user.
+      
+      USER DATA:
+      ${userProfileText}
+
+      OUTPUT FORMAT:
+      Return ONLY a JSON object with the following fields:
+      - summary: A 1-2 sentence professional summary.
+      - currentFocus: An array of 2-3 short strings describing what they are currently working on.
+      - strengths: An array of 3-4 professional strengths.
+      - highlights: An array of 3-4 brief highlights (e.g., "Based in London", "Expert in AI").
+
+      Strictly JSON only. No other text.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    // Clean JSON response (handle potential markdown blocks)
+    const jsonStr = text.replace(/```json/g, "").replace(/```/g, "").trim();
+    const aiData = JSON.parse(jsonStr);
+
+    return {
+      summary: aiData.summary || generateRuleBasedSummary(user, activeGoals.length, documentCount),
+      currentFocus: aiData.currentFocus || generateRuleBasedCurrentFocus(user, activeGoals),
+      strengths: aiData.strengths || generateRuleBasedStrengths(user),
+      highlights: aiData.highlights || generateRuleBasedHighlights(user, activeGoals),
+    };
+
+  } catch (error) {
+    console.error("❌ Gemini Error in generateAiProfile:", error);
+    // Fallback to rule-based
+    return {
+      summary: generateRuleBasedSummary(user, activeGoals.length, documentCount),
+      currentFocus: generateRuleBasedCurrentFocus(user, activeGoals),
+      strengths: generateRuleBasedStrengths(user),
+      highlights: generateRuleBasedHighlights(user, activeGoals),
+    };
+  }
 };
 
+
 /**
- * Generate user summary
+ * Fallback Rule-Based Generators
  */
-function generateSummary(
+function generateRuleBasedSummary(
   user: any,
   goalsCount: number,
   _documentCount: number
@@ -65,18 +130,16 @@ function generateSummary(
   const company = user.company ? ` at ${user.company}` : "";
   const location = user.location ? ` based in ${user.location}` : "";
 
-  let summary = `${
-    role.charAt(0).toUpperCase() + role.slice(1)
-  }${company}${location}`;
+  let summary = `${role.charAt(0).toUpperCase() + role.slice(1)
+    }${company}${location}`;
 
   if (user.oneLiner) {
     summary += `. ${user.oneLiner}`;
   }
 
   if (goalsCount > 0) {
-    summary += ` Currently working on ${goalsCount} active goal${
-      goalsCount > 1 ? "s" : ""
-    }`;
+    summary += ` Currently working on ${goalsCount} active goal${goalsCount > 1 ? "s" : ""
+      }`;
   }
 
   if (user.primaryGoal) {
@@ -87,9 +150,9 @@ function generateSummary(
 }
 
 /**
- * Generate current focus areas
+ * Generate current focus areas (Rule-Based Fallback)
  */
-function generateCurrentFocus(user: any, activeGoals: any[]): string[] {
+function generateRuleBasedCurrentFocus(user: any, activeGoals: any[]): string[] {
   const focus: string[] = [];
 
   // Add primary goal
@@ -119,9 +182,9 @@ function generateCurrentFocus(user: any, activeGoals: any[]): string[] {
 }
 
 /**
- * Generate strengths
+ * Generate strengths (Rule-Based Fallback)
  */
-function generateStrengths(user: any): string[] {
+function generateRuleBasedStrengths(user: any): string[] {
   const strengths: string[] = [];
 
   const roleStrengths: { [key: string]: string[] } = {
@@ -165,9 +228,9 @@ function generateStrengths(user: any): string[] {
 }
 
 /**
- * Generate highlights
+ * Generate highlights (Rule-Based Fallback)
  */
-function generateHighlights(user: any, activeGoals: any[]): string[] {
+function generateRuleBasedHighlights(user: any, activeGoals: any[]): string[] {
   const highlights: string[] = [];
 
   // Company highlight
@@ -192,8 +255,7 @@ function generateHighlights(user: any, activeGoals: any[]): string[] {
     );
     if (completedMilestones > 0) {
       highlights.push(
-        `Completed ${completedMilestones} milestone${
-          completedMilestones > 1 ? "s" : ""
+        `Completed ${completedMilestones} milestone${completedMilestones > 1 ? "s" : ""
         }`
       );
     }

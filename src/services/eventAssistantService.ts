@@ -142,7 +142,7 @@ export const EventAssistantService = {
                 };
             }
 
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
             const finalPrompt = `${systemPrompt}\n\n${userContent}`;
 
             const result = await model.generateContent(finalPrompt);

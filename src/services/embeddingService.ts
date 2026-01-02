@@ -57,7 +57,23 @@ export const EmbeddingService = {
     },
 
     /**
-     * Creates a composite text string from event fields.
+     * Creates a composite text string from event basic metadata only.
+     * Semantic fields: name, headline, description, tags, location
+     */
+    createEventMetadataText: (event: any): string => {
+        const parts = [
+            event.name,
+            event.headline,
+            event.description,
+            event.tags?.join(", "),
+            event.location
+        ].filter(Boolean);
+
+        return parts.join(". ");
+    },
+
+    /**
+     * Creates a composite text string from event fields including PDF.
      * Semantic fields: name, description, tags, location, headline, pdfExtractedText
      */
     createEventText: (event: any): string => {
@@ -67,7 +83,7 @@ export const EmbeddingService = {
             event.description,
             event.tags?.join(", "),
             event.location,
-            event.pdfExtractedText // Include PDF content for richer embeddings
+            event.pdfExtractedText // Include PDF content
         ].filter(Boolean);
 
         return parts.join(". ");

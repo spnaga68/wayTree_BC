@@ -64,6 +64,12 @@ export const debugLogger = (
     if (sanitizedBody.pdfFile) {
       sanitizedBody.pdfFile = "[Base64 PDF Data - REDACTED]";
     }
+    if (sanitizedBody.eventEmbedding) {
+      sanitizedBody.eventEmbedding = "[Vector Embedding Data - REDACTED]";
+    }
+    if (sanitizedBody.metadataEmbedding) {
+      sanitizedBody.metadataEmbedding = "[Vector Embedding Data - REDACTED]";
+    }
     const sensitiveFields = ["password", "otp", "token"];
     sensitiveFields.forEach((field) => {
       if (sanitizedBody[field]) {
@@ -99,6 +105,24 @@ export const debugLogger = (
       sanitizedResponse.pdfFile = "[Base64 PDF Data - REDACTED]";
     }
 
+    // REDACT EMBEDDINGS
+    const redactEmbeddings = (obj: any) => {
+      if (!obj || typeof obj !== 'object') return;
+
+      const targets = ['eventEmbedding', 'metadataEmbedding', 'profileEmbedding'];
+      targets.forEach(key => {
+        if (obj[key]) obj[key] = "[Vector Embedding Data - REDACTED]";
+      });
+
+      // Recurse into data array if it exists
+      if (Array.isArray(obj.data)) {
+        obj.data.forEach((item: any) => redactEmbeddings(item));
+      } else if (obj.data) {
+        redactEmbeddings(obj.data);
+      }
+    };
+
+    redactEmbeddings(sanitizedResponse);
     if (sanitizedResponse.token) {
       sanitizedResponse.token =
         sanitizedResponse.token.substring(0, 20) + "...";

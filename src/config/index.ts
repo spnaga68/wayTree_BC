@@ -23,7 +23,8 @@ interface Config {
     fromName: string;
     fromEmail: string;
   };
-  groqApiKey: string;
+  groqApiKey: string; // Deprecated: Use Gemini instead
+  geminiApiKey: string;
 }
 
 const config: Config = {
@@ -58,6 +59,7 @@ const config: Config = {
     fromEmail: process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "",
   },
   groqApiKey: process.env.GROQ_API_KEY || "",
+  geminiApiKey: process.env.GEMINI_API_KEY || "",
 };
 
 // Validate critical config

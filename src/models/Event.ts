@@ -18,7 +18,8 @@ export interface IEvent extends Document {
     isVerified: boolean;
     createdBy: mongoose.Types.ObjectId;
     attendees: mongoose.Types.ObjectId[];
-    eventEmbedding?: number[];
+    metadataEmbedding?: number[]; // NEW: Embeddings for just basic info
+    eventEmbedding?: number[];    // Now primarily for PDF-related/Combined info
     pdfChunks?: {
         chunkId: string;
         text: string;
@@ -109,6 +110,11 @@ const eventSchema = new Schema<IEvent>(
                 ref: "User",
             },
         ],
+        metadataEmbedding: [
+            {
+                type: Number,
+            },
+        ],
         eventEmbedding: [
             {
                 type: Number,
@@ -132,6 +138,7 @@ eventSchema.index({ createdBy: 1 });
 eventSchema.index({ dateTime: 1 });
 eventSchema.index({ isEvent: 1 });
 eventSchema.index({ isCommunity: 1 });
+eventSchema.index({ isVerified: 1 });
 
 // Post-save hook to verify data persistence
 eventSchema.post('save', function (doc) {

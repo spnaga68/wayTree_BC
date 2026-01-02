@@ -1,17 +1,15 @@
 
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
-import EventConnection from '../models/EventConnection';
+
 import CommunityConnection from '../models/CommunityConnection';
 import EventMember from '../models/EventMember';
 import { Event } from '../models/Event';
 import { User } from '../models/User';
+import { Notification } from '../models/Notification';
 import * as XLSX from 'xlsx';
 
-// Helper to get connection model based on event type
-const getConnectionModel = (isCommunity: boolean) => {
-    return isCommunity ? CommunityConnection : EventConnection;
-};
+
 
 /**
  * Toggle event participation - join or leave an event
@@ -68,6 +66,22 @@ export const toggleEventParticipation = async (req: Request, res: Response) => {
                 });
                 await newConnection.save();
                 console.log('✅ User joined the community');
+
+                // Create Notification
+                try {
+                    if (event.createdBy.toString() !== participantId) {
+                        await Notification.create({
+                            recipientId: event.createdBy,
+                            actorId: participantId,
+                            eventId: event._id,
+                            type: 'EVENT_JOIN'
+                        });
+                        console.log('🔔 Notification created for community join');
+                    }
+                } catch (notifyErr) {
+                    console.error('Failed to create notification:', notifyErr);
+                }
+
                 return res.status(200).json({
                     success: true,
                     message: 'Successfully joined the community',
@@ -107,9 +121,23 @@ export const toggleEventParticipation = async (req: Request, res: Response) => {
 
                 console.log('✅ User joined the event (added to member roster)');
                 // Update attendees in Event for metadata
-                event.attendees.addToSet(participantId);
+                (event.attendees as any).addToSet(participantId);
                 await event.save();
 
+                // Create Notification
+                try {
+                    if (event.createdBy.toString() !== participantId) {
+                        await Notification.create({
+                            recipientId: event.createdBy,
+                            actorId: participantId,
+                            eventId: event._id,
+                            type: 'EVENT_JOIN'
+                        });
+                        console.log('🔔 Notification created for event join');
+                    }
+                } catch (notifyErr) {
+                    console.error('Failed to create notification:', notifyErr);
+                }
 
                 return res.status(200).json({
                     success: true,
@@ -312,6 +340,29 @@ export const addManualMember = async (req: Request, res: Response) => {
         });
 
         await newMember.save();
+
+        // Create Notification (if manual member is a registered user)
+        try {
+            const registeredUser = await User.findOne({
+                $or: [
+                    { phoneNumber: phoneNumber },
+                    { name: name }
+                ]
+            });
+
+            if (organizerId.toString() !== (registeredUser?._id.toString() || '')) {
+                await Notification.create({
+                    recipientId: organizerId,
+                    actorId: registeredUser?._id,
+                    externalActorName: registeredUser ? undefined : name,
+                    eventId: eventId,
+                    type: 'EVENT_JOIN'
+                });
+                console.log('🔔 Notification created for manual member addition');
+            }
+        } catch (notifyErr) {
+            console.error('Failed to create notification for manual member:', notifyErr);
+        }
 
         return res.status(201).json({
             success: true,

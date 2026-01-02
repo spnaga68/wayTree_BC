@@ -67,7 +67,7 @@ export class PdfService {
                 // Fallback for some variants: new Parser(buffer)
                 if (err.message && err.message.includes("constructor")) {
                     // If it's a class
-                    const instance = new parser(pdfBuffer);
+                    new parser(pdfBuffer);
                     // Assume it has a parse method or similar? 
                     // Standard pdf-parse returns a promise.
                     // If this is a weird lib, we might need to inspect it.

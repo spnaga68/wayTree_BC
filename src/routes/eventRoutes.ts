@@ -109,47 +109,64 @@ router.post(
                     console.log(`✅ RAG Pipeline finished. Generated ${pdfChunks.length} chunks.`);
 
                     if (pdfChunks.length === 0) {
-                        console.warn("⚠️ Warning: RAG Pipeline returned 0 chunks. PDF might be empty or unreadable.");
-                        throw new Error("RAG Pipeline failed to generate chunks. Event creation aborted.");
+                        console.warn("⚠️ Warning: RAG Pipeline returned 0 chunks.");
                     }
                 } catch (ragError: any) {
                     console.error("❌ RAG Pipeline failed:", ragError);
-                    res.status(500).json({
-                        error: "Internal Server Error",
-                        message: "Failed to process PDF text chunks. " + ragError.message
-                    });
-                    return;
+                    // Continue even if RAG fails, but log it
                 }
             }
 
-            // 3. Generate Embedding for the EVENT (Conditional on RAG success)
-            // Include PDF extracted text for richer embeddings
+            // 3. Generate Embeddings for the EVENT
             let eventEmbedding: number[] = [];
+            let metadataEmbedding: number[] = [];
             try {
                 const { EmbeddingService } = await import("../services/embeddingService");
-                // Create a temporary object for text generation
                 const tempEvent = {
                     name,
                     headline,
                     description,
                     tags,
                     location,
-                    pdfExtractedText: pdfExtractedText // Use the extracted text
+                    pdfExtractedText
                 };
+
+                const metadataText = EmbeddingService.createEventMetadataText(tempEvent);
                 const eventText = EmbeddingService.createEventText(tempEvent);
 
-                if (eventText) {
-                    console.log(`📝 Generating Gemini embedding for new ${isCommunity ? 'community' : 'event'}: "${name}"`);
+                if (metadataText === eventText) {
+                    // Scenario: No PDF content. Both texts are identical.
+                    // Call API ONCE, store TWICE.
+                    console.log(`📝 Generating Gemini embedding for: "${name}" (Single API call for both fields)`);
+                    const sharedEmbedding = await EmbeddingService.generateEmbedding(metadataText);
+                    metadataEmbedding = sharedEmbedding;
+                    eventEmbedding = sharedEmbedding;
+                } else {
+                    // Scenario: PDF exists. Texts are different.
+                    // Call API TWICE.
+                    console.log(`📝 Generating Gemini event embedding (incl. PDF) for: "${name}"`);
                     eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
-                    console.log(`✅ Gemini embedding generated. Dimension: ${eventEmbedding.length}`);
+
+                    console.log(`📝 Generating Gemini metadata-only embedding for: "${name}"`);
+                    metadataEmbedding = await EmbeddingService.generateEmbedding(metadataText);
                 }
             } catch (err) {
-                console.error("❌ Failed to generate embedding:", err);
-                // Proceed without embedding if it fails
+                console.error("❌ Failed to generate embeddings:", err);
             }
 
             // Create event object with EXPLICIT field assignment
             const eventDoc = new Event();
+            eventDoc.attendees = [];
+            eventDoc.pdfChunks = pdfChunks;
+            eventDoc.metadataEmbedding = metadataEmbedding;
+            eventDoc.eventEmbedding = eventEmbedding;
+            eventDoc.pdfFile = pdfFile; // Store original PDF base64
+            eventDoc.pdfExtractedText = pdfExtractedText; // Store extracted text
+            eventDoc.isVerified = false; // Always false on creation;
+            eventDoc.photos = photos || [];
+            eventDoc.videos = videos || [];
+            eventDoc.tags = tags || [];
+            eventDoc.createdBy = new mongoose.Types.ObjectId(req.user.userId);
             eventDoc.name = name;
             eventDoc.headline = headline;
             eventDoc.description = description;
@@ -157,23 +174,11 @@ router.post(
                 eventDoc.dateTime = new Date(dateTime);
             }
             eventDoc.location = location;
-            eventDoc.photos = photos || [];
-            eventDoc.videos = videos || [];
-            eventDoc.tags = tags || [];
-            eventDoc.createdBy = new mongoose.Types.ObjectId(req.user.userId);
-            eventDoc.eventEmbedding = eventEmbedding;
-
-            // Store PDF data (only for events)
-            if (pdfFile && isEvent && !isCommunity) {
-                eventDoc.pdfFile = pdfFile;
-                eventDoc.pdfExtractedText = pdfExtractedText;
-                eventDoc.pdfChunks = pdfChunks;
-            }
 
             // CRITICAL: Explicitly set boolean flags
             eventDoc.isEvent = isEvent !== undefined ? Boolean(isEvent) : true;
             eventDoc.isCommunity = isCommunity !== undefined ? Boolean(isCommunity) : false;
-            eventDoc.isVerified = false; // Always false on creation
+            // eventDoc.isVerified = false; // Always false on creation - already set above
 
             console.log('💾 Saving Event with flags:');
             console.log('   - isEvent:', eventDoc.isEvent);
@@ -239,53 +244,74 @@ router.get(
             const User = (await import("../models/User")).User;
             const user = await User.findById(userId);
 
-            // If it's a standard request (not 'my' or 'all'), try vector search
+            // If it's a standard request (not 'my' or 'all'), try dual vector search
             if (!my && !all && user && user.profileEmbedding && user.profileEmbedding.length > 0) {
-                console.log(`🔍 semantic search for user: ${user.name} (${user.role})`);
+                console.log(`🔍 semantic dual-search for user: ${user.name}`);
                 try {
-                    const events = await Event.aggregate([
-                        {
-                            $vectorSearch: {
-                                index: "vector_index",
-                                path: "eventEmbedding",
-                                queryVector: user.profileEmbedding,
-                                numCandidates: 100,
-                                limit: 20
-                            }
-                        },
-                        {
-                            $match: {
-                                isVerified: true,
-                                dateTime: { $gte: new Date() }
-                            }
-                        },
-                        {
-                            $project: {
-                                name: 1,
-                                location: 1,
-                                description: 1,
-                                dateTime: 1,
-                                headline: 1,
-                                photos: 1,
-                                tags: 1,
-                                isVerified: 1,
-                                createdBy: 1,
-                                attendees: 1,
-                                isEvent: 1,
-                                isCommunity: 1,
-                                score: { $meta: "vectorSearchScore" }
-                            }
+                    // Search stage template
+                    const getSearchStage = (path: string) => ({
+                        $vectorSearch: {
+                            index: "vector_index",
+                            path,
+                            queryVector: user.profileEmbedding,
+                            numCandidates: 100,
+                            limit: 20
                         }
+                    });
+
+                    // Match stage template: Global/Discovery should EXCLUDE my own events
+                    const matchStage = {
+                        $match: {
+                            isVerified: true,
+                            dateTime: { $gte: new Date() },
+                            createdBy: { $ne: new mongoose.Types.ObjectId(userId) } // Exclude self
+                        }
+                    };
+
+                    // Add score projection
+                    const scoreStage = {
+                        $addFields: {
+                            score: { $meta: "vectorSearchScore" }
+                        }
+                    };
+
+                    // Run parallel searches
+                    const [metaResults, eventResults] = await Promise.all([
+                        Event.aggregate([getSearchStage("metadataEmbedding"), matchStage, scoreStage]),
+                        Event.aggregate([getSearchStage("eventEmbedding"), matchStage, scoreStage])
                     ]);
 
-                    await Event.populate(events, { path: "createdBy", select: "name photoUrl role company" });
+                    // Merge and deduplicate results
+                    const mergedMap = new Map<string, any>();
 
-                    const minScore = 0.50;
-                    const processedEvents = events
-                        .filter((event: any) => event.score >= minScore)
+                    [...metaResults, ...eventResults].forEach(event => {
+                        const id = event._id.toString();
+                        const existing = mergedMap.get(id);
+                        const score = event.score || 0;
+                        if (!existing || score > existing.score) {
+                            mergedMap.set(id, {
+                                ...event,
+                                score: score,
+                                // Note where we found it for debugging
+                                searchOrigin: existing ? 'both' : (eventResults.includes(event) ? 'combined' : 'metadata')
+                            });
+                        }
+                    });
+
+                    const mergedEvents = Array.from(mergedMap.values())
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, 20);
+                    await Event.populate(mergedEvents, { path: "createdBy", select: "name photoUrl role company" });
+
+                    const minScore = 0.10; // LOWERED THRESHOLD AS REQUESTED
+
+                    console.log(`🔍 Search Scores:`, mergedEvents.map((ev: any) => `${ev.name}: ${(ev.score || 0).toFixed(4)}`).join(" | "));
+
+                    const processedEvents = mergedEvents
+                        .filter((event: any) => (event.score || 0) >= minScore)
                         .map((event: any) => ({
                             ...event,
-                            matchScore: Math.round(event.score * 100),
+                            matchScore: Math.round((event.score || 0) * 100),
                             isJoined: event.attendees
                                 ? event.attendees.some((a: any) => a.toString() === userId)
                                 : false
@@ -297,7 +323,7 @@ router.get(
                     });
                     return;
                 } catch (vectorError) {
-                    console.error("⚠️ Vector search failed. Falling back to standard list.", vectorError);
+                    console.error("⚠️ Dual vector search failed. Falling back.", vectorError);
                 }
             }
 
@@ -383,21 +409,65 @@ router.put(
                 return;
             }
 
-            // Generate Embedding on verification
-            let eventEmbedding: number[] = [];
+            // 1. Process PDF for RAG if it exists but hasn't been processed
+            let pdfChunks = baseEvent.pdfChunks;
+            let pdfExtractedText = baseEvent.pdfExtractedText;
+
+            // Safety check: if for some reason chunks are missing, regenerate them
+            if (baseEvent.pdfFile && (!pdfChunks || pdfChunks.length === 0)) {
+                try {
+                    const { RagPipelineService } = await import("../services/ragPipelineService");
+                    pdfChunks = await RagPipelineService.processEventPdf(baseEvent.pdfFile);
+
+                    if (!pdfExtractedText) {
+                        const { PdfService } = await import("../services/pdfService");
+                        pdfExtractedText = await PdfService.extractTextFromPdf(baseEvent.pdfFile);
+                    }
+                } catch (ragErr) {
+                    console.error("❌ Failed to process PDF during verification:", ragErr);
+                }
+            }
+
+            // 2. Refresh Embeddings if missing
+            let eventEmbedding = baseEvent.eventEmbedding;
+            let metadataEmbedding = baseEvent.metadataEmbedding;
+
             try {
                 const { EmbeddingService } = await import("../services/embeddingService");
-                const eventText = EmbeddingService.createEventText(baseEvent);
-                if (eventText) {
-                    eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+
+                if ((!eventEmbedding || eventEmbedding.length === 0) || (!metadataEmbedding || metadataEmbedding.length === 0)) {
+                    const metadataText = EmbeddingService.createEventMetadataText(baseEvent.toObject());
+                    const eventText = EmbeddingService.createEventText({
+                        ...baseEvent.toObject(),
+                        pdfExtractedText
+                    });
+
+                    if (metadataText === eventText) {
+                        const sharedEmbedding = await EmbeddingService.generateEmbedding(metadataText);
+                        eventEmbedding = sharedEmbedding;
+                        metadataEmbedding = sharedEmbedding;
+                    } else {
+                        if (!eventEmbedding || eventEmbedding.length === 0) {
+                            eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+                        }
+                        if (!metadataEmbedding || metadataEmbedding.length === 0) {
+                            metadataEmbedding = await EmbeddingService.generateEmbedding(metadataText);
+                        }
+                    }
                 }
             } catch (err) {
-                console.error("Failed to generate embedding for event:", err);
+                console.error("Failed to generate embeddings during verification:", err);
             }
 
             const event = await Event.findByIdAndUpdate(
                 id,
-                { isVerified: true, eventEmbedding },
+                {
+                    isVerified: true,
+                    eventEmbedding,
+                    metadataEmbedding,
+                    pdfChunks,
+                    pdfExtractedText
+                },
                 { new: true }
             );
 
@@ -475,60 +545,62 @@ router.get(
                 return;
             }
 
-            // Vector Search Aggregation
-            const events = await Event.aggregate([
-                {
-                    $vectorSearch: {
-                        index: "vector_index", // Ensure this matches Atlas config
-                        path: "eventEmbedding",
-                        queryVector: user.profileEmbedding,
-                        numCandidates: 100,
-                        limit: 10
-                    }
-                },
-                {
-                    $match: {
-                        isVerified: true,
-                        dateTime: { $gte: new Date() }
-                    }
-                },
-                {
-                    $project: {
-                        name: 1,
-                        location: 1,
-                        description: 1,
-                        dateTime: 1,
-                        headline: 1,
-                        photos: 1,
-                        tags: 1,
-                        isVerified: 1,
-                        createdBy: 1,
-                        attendees: 1,
-                        score: { $meta: "vectorSearchScore" }
-                    }
+            // Dual Vector Search Aggregation
+            const getSearchStage = (path: string) => ({
+                $vectorSearch: {
+                    index: "vector_index",
+                    path,
+                    queryVector: user.profileEmbedding,
+                    numCandidates: 100,
+                    limit: 10
                 }
+            });
+
+            const matchStage = {
+                $match: {
+                    isVerified: true,
+                    dateTime: { $gte: new Date() },
+                    createdBy: { $ne: new mongoose.Types.ObjectId(req.user.userId) } // Exclude self
+                }
+            };
+
+            // Parallel search with score projection
+            const scoreStage = {
+                $addFields: {
+                    score: { $meta: "vectorSearchScore" }
+                }
+            };
+
+            const [metaResults, eventResults] = await Promise.all([
+                Event.aggregate([getSearchStage("metadataEmbedding"), matchStage, scoreStage]),
+                Event.aggregate([getSearchStage("eventEmbedding"), matchStage, scoreStage])
             ]);
 
-            console.log(`\n🔍 Recommendation Results for User: ${user.name}`);
-            console.log("=========================================");
-            if (events.length === 0) {
-                console.log("ℹ️ No relevant events found.");
-            } else {
-                events.forEach((event: any, index: number) => {
-                    const isRelevant = event.score > 0.6; // Threshold for explicit relevance logging
-                    const status = isRelevant ? "✅ RELEVANT" : "⚠️ LOW RELEVANCE";
+            // Merge and deduplicate
+            const mergedMap = new Map<string, any>();
+            [...metaResults, ...eventResults].forEach(event => {
+                const id = event._id.toString();
+                const existing = mergedMap.get(id);
+                const score = event.score || 0;
+                if (!existing || score > existing.score) {
+                    mergedMap.set(id, { ...event, score });
+                }
+            });
 
-                    console.log(`\nEvent #${index + 1}: ${event.name}`);
-                    console.log(`   📍 Location: ${event.location}`);
-                    console.log(`   ★ Score: ${event.score.toFixed(4)}`);
-                    console.log(`   🏷️ Status: ${status}`);
-                });
-            }
-            console.log("=========================================\n");
+            const mergedEvents = Array.from(mergedMap.values())
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 10);
+
+            const processedEvents = mergedEvents.map((event: any) => ({
+                ...event,
+                matchScore: Math.round((event.score || 0) * 100)
+            }));
+
+            console.log(`🔍 Recommendation Scores:`, processedEvents.map((ev: any) => `${ev.name}: ${ev.matchScore}%`).join(" | "));
 
             res.status(200).json({
                 message: "Recommended events retrieved successfully",
-                data: events,
+                data: processedEvents,
             });
 
         } catch (error: any) {
@@ -623,22 +695,64 @@ router.put(
                 return;
             }
 
-            // HANDLE PDF UPDATE
+            // 1. HANDLE PDF UPDATE
             if (updates.pdfFile) {
                 try {
+                    console.log('📄 UPDATE: PDF modified. Updating PDF chunks and event embedding...');
                     const { PdfService } = await import("../services/pdfService");
-                    // Note: You should check if it IS an event, but usually irrelevant for update unless strict
                     if (PdfService.isValidPdf(updates.pdfFile)) {
-                        console.log('📄 UPDATE: Extracting text from new PDF...');
                         updates.pdfExtractedText = await PdfService.extractTextFromPdf(updates.pdfFile);
 
                         // RAG Pipeline
                         const { RagPipelineService } = await import("../services/ragPipelineService");
-                        console.log('🤖 UPDATE: Triggering RAG Pipeline...');
                         updates.pdfChunks = await RagPipelineService.processEventPdf(updates.pdfFile);
+
+                        // Regenerate combined/PDF embedding
+                        const { EmbeddingService } = await import("../services/embeddingService");
+                        const eventText = EmbeddingService.createEventText({
+                            ...existingEvent.toObject(),
+                            ...updates
+                        });
+                        updates.eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
                     }
                 } catch (err) {
                     console.error("❌ Failed to process PDF update:", err);
+                }
+            }
+
+            // 2. REGENERATE METADATA EMBEDDING IF TEXT CHANGED
+            const metadataFields = ['name', 'headline', 'description', 'location', 'tags'];
+            const hasMetadataChanges = metadataFields.some(field => updates[field] !== undefined);
+
+            if (hasMetadataChanges || updates.pdfFile) {
+                try {
+                    const { EmbeddingService } = await import("../services/embeddingService");
+                    const metadataText = EmbeddingService.createEventMetadataText({
+                        ...existingEvent.toObject(),
+                        ...updates
+                    });
+                    const eventText = EmbeddingService.createEventText({
+                        ...existingEvent.toObject(),
+                        ...updates
+                    });
+
+                    if (metadataText === eventText) {
+                        console.log('📝 UPDATE: Metadata modified (No PDF). Regenerating shared embedding...');
+                        const sharedEmbedding = await EmbeddingService.generateEmbedding(metadataText);
+                        updates.metadataEmbedding = sharedEmbedding;
+                        updates.eventEmbedding = sharedEmbedding;
+                    } else {
+                        if (hasMetadataChanges) {
+                            console.log('📝 UPDATE: Metadata modified. Regenerating metadata embedding...');
+                            updates.metadataEmbedding = await EmbeddingService.generateEmbedding(metadataText);
+                        }
+                        if (updates.pdfFile) {
+                            console.log('📝 UPDATE: PDF modified. Regenerating event embedding...');
+                            updates.eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+                        }
+                    }
+                } catch (err) {
+                    console.error("❌ Failed to regenerate embeddings during update:", err);
                 }
             }
 
@@ -755,6 +869,23 @@ router.post(
             event.attendees.push(new mongoose.Types.ObjectId(userId));
             await event.save();
 
+            // Notify event creator
+            try {
+                if (event.createdBy.toString() !== userId) {
+                    const { Notification } = await import("../models/Notification");
+                    await Notification.create({
+                        recipientId: event.createdBy,
+                        actorId: userId,
+                        eventId: event._id,
+                        type: 'EVENT_JOIN'
+                    });
+                    console.log(`🔔 Notification created for user ${event.createdBy}`);
+                }
+            } catch (notifyError) {
+                console.error("Failed to create notification:", notifyError);
+                // Don't fail the join request just because notification failed
+            }
+
             res.status(200).json({
                 message: "Joined event successfully",
                 data: event,
@@ -821,9 +952,9 @@ router.post(
             // Get Event Assistant Service
             const { EventAssistantService } = await import("../services/eventAssistantService");
 
-            const response = await EventAssistantService.askQuestion(
-                event,
+            const response = await EventAssistantService.askEventAssistant(
                 question,
+                event,
                 user, // Pass the Mongoose document
                 conversationHistory || []
             );
