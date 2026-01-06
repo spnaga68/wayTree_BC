@@ -10,17 +10,17 @@ export class RagPipelineService {
     private static pipelineScript = path.join(__dirname, '../../ai_pipeline/rag_pipeline.py');
 
     /**
-     * Processes multiple Base64 PDFs using the Python RAG pipeline.
+     * Processes multiple URLs using the Python RAG pipeline.
      * Returns a merged array of chunks with embeddings.
      */
-    static async processMultiplePdfs(pdfBase64s: string[]): Promise<any[]> {
-        console.log(`🚀 Starting RAG Pipeline for ${pdfBase64s.length} PDFs...`);
+    static async processMultiplePdfs(pdfUrls: string[]): Promise<any[]> {
+        console.log(`🚀 Starting RAG Pipeline for ${pdfUrls.length} PDFs...`);
         let allChunks: any[] = [];
 
-        for (let i = 0; i < pdfBase64s.length; i++) {
+        for (let i = 0; i < pdfUrls.length; i++) {
             try {
-                console.log(`📑 Processing PDF ${i + 1}/${pdfBase64s.length}...`);
-                const chunks = await this.processEventPdf(pdfBase64s[i]);
+                console.log(`📑 Processing PDF ${i + 1}/${pdfUrls.length}...`);
+                const chunks = await this.processEventPdf(pdfUrls[i]);
                 // Prefix chunk IDs to avoid collisions
                 const prefixedChunks = chunks.map(c => ({
                     ...c,
@@ -40,7 +40,7 @@ export class RagPipelineService {
      * Processes a Base64 PDF using the Python RAG pipeline.
      * Returns an array of chunks with embeddings.
      */
-    static async processEventPdf(pdfBase64: string): Promise<any[]> {
+    static async processEventPdf(pdfInput: string): Promise<any[]> {
         console.log('🚀 Starting RAG Pipeline processing...');
 
         // Ensure temp directory exists
@@ -53,14 +53,26 @@ export class RagPipelineService {
         const outputPath = path.join(this.tempDir, `embeddings_${timestamp}.json`);
 
         try {
-            // 1. Write Base64 to file
+            // 1. Write URL content to file
             console.log(`📄 Writing temporary PDF to: ${inputPath}`);
 
-            // Clean base64 string
-            const base64Data = pdfBase64.includes(',') ? pdfBase64.split(',')[1] : pdfBase64;
-            const buffer = Buffer.from(base64Data, 'base64');
+            if (pdfInput.startsWith('http://') || pdfInput.startsWith('https://')) {
+                console.log(`   Downloading PDF from URL: ${pdfInput}`);
+                const response = await fetch(pdfInput);
+                if (!response.ok) throw new Error(`Failed to fetch PDF: ${response.statusText}`);
+                const arrayBuffer = await response.arrayBuffer();
+                const buffer = Buffer.from(arrayBuffer);
 
-            fs.writeFileSync(inputPath, buffer);
+                // Validate PDF header
+                const header = buffer.toString('utf8', 0, 5);
+                if (!header.startsWith('%PDF')) {
+                    throw new Error('Downloaded file is not a valid PDF (header mismatch)');
+                }
+
+                fs.writeFileSync(inputPath, buffer);
+            } else {
+                throw new Error("Invalid Input: Base64 processing is deprecated. Please provide a valid URL.");
+            }
 
             // 2. Run Python Script
             const command = `python "${this.pipelineScript}" "${inputPath}" "${outputPath}"`;

@@ -1,4 +1,5 @@
 import QRCode from "qrcode";
+import { uploadToS3 } from "./s3Service";
 
 /**
  * QR Code Service for generating and managing QR codes for network codes
@@ -41,7 +42,18 @@ export class QRCodeService {
         width: 512,
       });
 
-      return qrCodeDataURL;
+      // Upload to S3
+      console.log(`📡 [QR-SERVICE] Uploading QR code for ${codeId} to S3...`);
+      const matches = qrCodeDataURL.match(/^data:image\/png;base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        const buffer = Buffer.from(matches[2], 'base64');
+        const fileName = `qrcode_${codeId}_${Date.now()}.png`;
+        const s3Url = await uploadToS3(buffer, fileName, 'image/png', 'qrcodes');
+        console.log(`✅ [QR-SERVICE] QR code S3 URL: ${s3Url}`);
+        return s3Url;
+      }
+
+      return qrCodeDataURL; // Fallback to Base64 if regex fails
     } catch (error: any) {
       console.error("Error generating QR code:", error);
       throw new Error(`Failed to generate QR code: ${error.message}`);
@@ -85,6 +97,14 @@ export class QRCodeService {
         margin: 1,
         width: 512,
       });
+
+      // Upload to S3
+      const matches = qrCodeDataURL.match(/^data:image\/png;base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        const buffer = Buffer.from(matches[2], 'base64');
+        const fileName = `qrcode_simple_${Date.now()}.png`;
+        return await uploadToS3(buffer, fileName, 'image/png', 'qrcodes');
+      }
 
       return qrCodeDataURL;
     } catch (error) {

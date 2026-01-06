@@ -4,147 +4,100 @@ import mongoose from 'mongoose';
 
 import CommunityConnection from '../models/CommunityConnection';
 import EventMember from '../models/EventMember';
+import EventConnection from '../models/EventConnection';
 import { Event } from '../models/Event';
 import { User } from '../models/User';
 import { Notification } from '../models/Notification';
 import * as XLSX from 'xlsx';
 
-
-
 /**
  * Toggle event participation - join or leave an event
- * POST /event-connections/toggle
+ * POST /event-connections/toggle-participation
  */
 export const toggleEventParticipation = async (req: Request, res: Response) => {
     try {
-        console.log('📥 Toggle Event Participation Request Received');
-        console.log('   - Body:', JSON.stringify(req.body));
-
         const { eventId, participantId } = req.body;
+        console.log(`\n🔘 [TOGGLE PARTICIPATION] Event: ${eventId}, User: ${participantId}`);
 
-        // Validate inputs
         if (!eventId || !participantId) {
-            console.log('❌ Validation failed: Missing eventId or participantId');
             return res.status(400).json({
                 success: false,
                 message: 'Event ID and Participant ID are required'
             });
         }
 
-        // Check if event exists to determine type
         const event = await Event.findById(eventId);
         if (!event) {
-            console.log('❌ Event not found:', eventId);
-            return res.status(404).json({
-                success: false,
-                message: 'Event not found'
-            });
+            console.log('❌ Event not found');
+            return res.status(404).json({ success: false, message: 'Event not found' });
         }
 
-        const isCommunity = event.isCommunity || false;
+        // Check if already joined (Check ALL models for robustness)
+        const [existingMember, existingConn, existingComm] = await Promise.all([
+            EventMember.findOne({ eventId, userId: participantId }),
+            EventConnection.findOne({ eventId, participantId }),
+            CommunityConnection.findOne({ eventId, participantId })
+        ]);
 
-        if (isCommunity) {
-            // COMMUNITY FLOW: Use CommunityConnection
-            const ConnectionModel = CommunityConnection;
-            const existingConnection = await ConnectionModel.findOne({ eventId, participantId });
+        const joinedRecord = existingMember || existingConn || existingComm;
 
-            if (existingConnection) {
-                // Leave Community
-                await ConnectionModel.deleteOne({ _id: existingConnection._id });
-                console.log('✅ User left the community');
-                return res.status(200).json({
-                    success: true,
-                    message: 'Successfully left the community',
-                    isJoined: false
-                });
-            } else {
-                // Join Community
-                const newConnection = new ConnectionModel({
-                    eventId,
-                    organizerId: event.createdBy,
-                    participantId,
-                });
-                await newConnection.save();
-                console.log('✅ User joined the community');
+        if (joinedRecord) {
+            console.log('🚪 User is leaving event...');
+            // Leave: Remove from all possible models
+            await Promise.all([
+                EventMember.deleteOne({ eventId, userId: participantId }),
+                EventConnection.deleteOne({ eventId, participantId }),
+                CommunityConnection.deleteOne({ eventId, participantId }),
+                Event.findByIdAndUpdate(eventId, { $pull: { attendees: participantId } })
+            ]);
 
-                // Create Notification
-                try {
-                    if (event.createdBy.toString() !== participantId) {
-                        await Notification.create({
-                            recipientId: event.createdBy,
-                            actorId: participantId,
-                            eventId: event._id,
-                            type: 'EVENT_JOIN'
-                        });
-                        console.log('🔔 Notification created for community join');
-                    }
-                } catch (notifyErr) {
-                    console.error('Failed to create notification:', notifyErr);
-                }
-
-                return res.status(200).json({
-                    success: true,
-                    message: 'Successfully joined the community',
-                    isJoined: true,
-                    connection: newConnection
-                });
-            }
-
+            return res.status(200).json({
+                success: true,
+                message: 'Successfully left',
+                isJoined: false
+            });
         } else {
-            // EVENT FLOW: Use ONLY EventMember (No EventConnection)
-            const existingMember = await EventMember.findOne({ eventId, userId: participantId });
-
-            if (existingMember) {
-                // Leave Event
-                await EventMember.deleteOne({ _id: existingMember._id });
-                console.log('✅ User left the event (removed from member roster)');
-                return res.status(200).json({
-                    success: true,
-                    message: 'Successfully left the event',
-                    isJoined: false
-                });
-            } else {
-                // Join Event
-                const user = await User.findById(participantId);
-                if (!user) {
-                    return res.status(404).json({ success: false, message: 'User not found' });
-                }
-
-                await EventMember.create({
-                    eventId,
-                    organizerId: event.createdBy,
-                    userId: participantId,
-                    name: user.name || 'Unknown',
-                    phoneNumber: user.phoneNumber,
-                    source: 'join'
-                });
-
-                console.log('✅ User joined the event (added to member roster)');
-                // Update attendees in Event for metadata
-                (event.attendees as any).addToSet(participantId);
-                await event.save();
-
-                // Create Notification
-                try {
-                    if (event.createdBy.toString() !== participantId) {
-                        await Notification.create({
-                            recipientId: event.createdBy,
-                            actorId: participantId,
-                            eventId: event._id,
-                            type: 'EVENT_JOIN'
-                        });
-                        console.log('🔔 Notification created for event join');
-                    }
-                } catch (notifyErr) {
-                    console.error('Failed to create notification:', notifyErr);
-                }
-
-                return res.status(200).json({
-                    success: true,
-                    message: 'Successfully joined the event',
-                    isJoined: true
-                });
+            console.log('➕ User is joining event...');
+            // Join: Use EventMember for full-profile support (Manual/Excel/App)
+            const user = await User.findById(participantId);
+            if (!user) {
+                console.log('❌ User not found');
+                return res.status(404).json({ success: false, message: 'User not found' });
             }
+
+            const newMember = await EventMember.create({
+                eventId,
+                organizerId: event.createdBy,
+                userId: participantId,
+                name: user.name || 'Unknown',
+                phoneNumber: user.phoneNumber,
+                source: 'join'
+            });
+
+            // Also add to attendees array for metadata consistency
+            await Event.findByIdAndUpdate(eventId, { $addToSet: { attendees: participantId } });
+            console.log(`✅ User joined. EventMember created ID: ${newMember._id}`);
+
+            // Create Notification
+            try {
+                if (event.createdBy.toString() !== participantId) {
+                    await Notification.create({
+                        recipientId: event.createdBy,
+                        actorId: participantId,
+                        eventId: event._id,
+                        type: 'EVENT_JOIN'
+                    });
+                }
+            } catch (notifyErr) {
+                console.error('Failed to create notification:', notifyErr);
+            }
+
+            return res.status(200).json({
+                success: true,
+                message: 'Successfully joined',
+                isJoined: true,
+                member: newMember
+            });
         }
 
     } catch (error) {
@@ -165,29 +118,20 @@ export const checkEventParticipation = async (req: Request, res: Response) => {
     try {
         const { eventId, participantId } = req.params;
 
-        const event = await Event.findById(eventId);
-        if (!event) {
-            return res.status(404).json({ success: false, message: 'Event not found' });
-        }
+        const [existingMember, existingConn, existingComm, event] = await Promise.all([
+            EventMember.findOne({ eventId, userId: participantId }),
+            EventConnection.findOne({ eventId, participantId }),
+            CommunityConnection.findOne({ eventId, participantId }),
+            Event.findById(eventId)
+        ]);
 
-        const isCommunity = event.isCommunity || false;
-        let isJoined = false;
-        let connection = null;
-
-        if (isCommunity) {
-            const found = await CommunityConnection.findOne({ eventId, participantId });
-            isJoined = !!found;
-            connection = found;
-        } else {
-            const found = await EventMember.findOne({ eventId, userId: participantId });
-            isJoined = !!found;
-            connection = found;
-        }
+        const isAtendeeInArray = event?.attendees?.some(id => id.toString() === participantId) || false;
+        const isJoined = !!(existingMember || existingConn || existingComm || isAtendeeInArray);
 
         return res.status(200).json({
             success: true,
             isJoined,
-            connection
+            connection: existingMember || existingConn || existingComm
         });
     } catch (error) {
         console.error('❌ Error checking participation:', error);
@@ -206,87 +150,92 @@ export const checkEventParticipation = async (req: Request, res: Response) => {
 export const getEventParticipants = async (req: Request, res: Response) => {
     try {
         const { eventId } = req.params;
+        console.log(`\n🔍 [FETCH PARTICIPANTS] Event ID: ${eventId}`);
 
         if (!mongoose.Types.ObjectId.isValid(eventId)) {
+            console.log('❌ Invalid Event ID format');
             return res.status(400).json({ success: false, message: 'Invalid event ID' });
         }
 
-        const event = await Event.findById(eventId);
-        if (!event) {
-            return res.status(404).json({ success: false, message: 'Event not found' });
-        }
+        const objEventId = new mongoose.Types.ObjectId(eventId);
 
-        const isCommunity = event.isCommunity || false;
-
-        // 1. Fetch from EventMember (Covers Manual, Excel, and Event-Joins)
-        const eventMembersPromise = EventMember.find({ eventId }).sort({ joinedAt: -1 });
-
-        // 2. If Community, also fetch CommunityConnection (Covers Community-Joins)
-        let communityConnectionsPromise: any = Promise.resolve([]);
-        if (isCommunity) {
-            communityConnectionsPromise = CommunityConnection.find({ eventId })
-                .populate('participantId', 'name email phoneNumber photoUrl role company position')
-                .sort({ joinedAt: -1 });
-        }
-
-        const [eventMembers, communityConnections] = await Promise.all([
-            eventMembersPromise,
-            communityConnectionsPromise
+        // Fetch from all possible sources with logs
+        console.log('--- DB QUERIES START ---');
+        const [eventMembers, eventConns, communityConns, eventDoc] = await Promise.all([
+            EventMember.find({ eventId: objEventId }).lean(),
+            EventConnection.find({ eventId: objEventId }).populate('participantId', 'name email phoneNumber photoUrl role company').lean(),
+            CommunityConnection.find({ eventId: objEventId }).populate('participantId', 'name email phoneNumber photoUrl role company').lean(),
+            Event.findById(objEventId).populate('attendees', 'name email phoneNumber photoUrl role company').lean()
         ]);
 
-        // 3. Normalize and Deduplicate
+        console.log(`📊 DB Results for ${eventId}:`);
+        console.log(`   - EventMember records: ${eventMembers.length}`);
+        console.log(`   - EventConnection records: ${eventConns.length}`);
+        console.log(`   - CommunityConnection records: ${communityConns.length}`);
+        console.log(`   - Event Doc found: ${!!eventDoc}`);
+        if (eventDoc) {
+            console.log(`   - Event Attendees Array size: ${eventDoc.attendees?.length || 0}`);
+        }
+
+        // FALLBACK: If nothing found with ObjectId, try String ID (just in case)
+        let fallbackMembers: any[] = [];
+        if (eventMembers.length === 0 && eventConns.length === 0 && communityConns.length === 0 && (!eventDoc || (eventDoc.attendees?.length || 0) === 0)) {
+            console.log('🕵️ ObjectId queries empty, trying String ID fallback...');
+            fallbackMembers = await EventMember.find({ eventId: eventId }).lean();
+            console.log(`   - EventMember (String ID search): ${fallbackMembers.length}`);
+        }
+
         const combinedMembers = new Map<string, any>();
 
-        // Helper to generate key (Phone preferred, else Name)
-        const getKey = (p: any, isConn: boolean = false) => {
-            let phone, name;
-            if (isConn) {
-                phone = p.participantId?.phoneNumber;
-                name = p.participantId?.name;
-            } else {
-                phone = p.phoneNumber;
-                name = p.name;
-            }
+        // Helper to normalize and add to map
+        const addMember = (m: any, source: string) => {
+            if (!m) return;
 
-            if (phone) return `phone:${String(phone).replace(/\D/g, '')}`;
-            if (name) return `name:${String(name).toLowerCase().trim()}`;
-            return `id:${p._id}`;
-        };
+            // Handle both flat (EventMember) and nested (EventConnection/attendees) structures
+            const userData = m.participantId || m.userId || (m.email || m.phoneNumber || m.name ? m : null);
+            const userId = userData?._id?.toString() || m.userId?.toString() || m.participantId?.toString() || (typeof m === 'string' ? m : m._id?.toString());
+            const name = userData?.name || m.name || 'Unknown';
+            const phone = userData?.phoneNumber || m.phoneNumber || '';
+            const email = userData?.email || m.email || '';
 
-        // Add Community Connections (App Users who joined community)
-        // These take precedence as they are "Active Users"
-        (communityConnections as any[]).forEach((conn: any) => {
-            if (conn.participantId) {
-                const key = getKey(conn, true);
+            const key = phone ? `phone:${phone}` : (email ? `email:${email}` : `id:${userId}`);
+
+            if (key && !combinedMembers.has(key)) {
                 combinedMembers.set(key, {
-                    _id: conn._id,
-                    eventId: conn.eventId,
-                    organizerId: conn.organizerId,
-                    userId: conn.participantId._id,
-                    name: conn.participantId.name,
-                    phoneNumber: conn.participantId.phoneNumber,
-                    source: 'join',
-                    joinedAt: conn.joinedAt,
-                    participant: conn.participantId // Keep full profile
+                    _id: m._id || userId,
+                    name: name,
+                    phoneNumber: phone,
+                    email: email,
+                    photoUrl: userData?.photoUrl || m.photoUrl || '',
+                    role: userData?.role || m.role || '',
+                    company: userData?.company || m.company || '',
+                    source: m.source || source,
+                    joinedAt: m.joinedAt || m.createdAt || eventDoc?.createdAt,
+                    userId: userId
                 });
             }
-        });
+        };
 
-        // Add EventMembers (Manual, Excel, or Event-type Joins)
-        (eventMembers as any[]).forEach((member: any) => {
-            const key = getKey(member, false);
-            // Use the manual/excel entry if not already present from community connection
-            if (!combinedMembers.has(key)) {
-                combinedMembers.set(key, member.toObject());
-            }
-        });
+        // 1. Process EventMember (Manual/Excel/Joins)
+        eventMembers.forEach(m => addMember(m, 'manual'));
+        fallbackMembers.forEach(m => addMember(m, 'manual'));
 
-        // Convert Map to Array and Sort by Name
-        const participants = Array.from(combinedMembers.values()).sort((a, b) => {
-            const nameA = (a.name || 'Unknown').toLowerCase();
-            const nameB = (b.name || 'Unknown').toLowerCase();
-            return nameA.localeCompare(nameB);
-        });
+        // 2. Process EventConnection
+        eventConns.forEach(m => addMember(m, 'join'));
+
+        // 3. Process CommunityConnection
+        communityConns.forEach(m => addMember(m, 'join'));
+
+        // 4. Process attendees array
+        if (eventDoc?.attendees) {
+            eventDoc.attendees.forEach((u: any) => addMember(u, 'join'));
+        }
+
+        const participants = Array.from(combinedMembers.values()).sort((a, b) =>
+            (a.name || '').localeCompare(b.name || '')
+        );
+
+        console.log(`✅ FINAL TOTAL participants for event ${eventId}: ${participants.length}`);
 
         return res.status(200).json({
             success: true,

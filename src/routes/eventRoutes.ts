@@ -1,10 +1,16 @@
 import { Router, Response } from "express";
 import mongoose from "mongoose";
 import { authMiddleware } from "../middleware/authMiddleware";
+import { cacheMiddleware, invalidateCache } from "../middleware/cacheMiddleware";
+const { CacheTTL } = require("../services/cacheService");
 import { AuthRequest } from "../types";
 import { Event } from "../models/Event";
+import { uploadToS3, deleteMultipleFromS3 } from "../services/s3Service";
 
 const router = Router();
+
+// Invalidate cache on all mutations (POST, PUT, DELETE)
+router.use(invalidateCache('route:/api/events'));
 
 /**
  * POST /
@@ -68,132 +74,94 @@ router.post(
                 return;
             }
 
-            // Extract text from PDF if provided
-            let pdfExtractedTexts: string[] = [];
-            if (pdfFiles && Array.isArray(pdfFiles) && pdfFiles.length > 0) {
-                try {
-                    const { PdfService } = await import("../services/pdfService");
+            // 0. HANDLE IMAGE UPLOADS TO S3
+            const s3PhotoUrls: string[] = [];
+            if (photos && Array.isArray(photos)) {
+                for (let i = 0; i < photos.length; i++) {
+                    const img = photos[i];
+                    if (img.startsWith('data:image')) {
+                        try {
+                            const matches = img.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+                            if (matches && matches.length === 3) {
+                                const contentType = matches[1];
+                                const buffer = Buffer.from(matches[2], 'base64');
+                                const extension = contentType.split('/')[1] || 'png';
+                                const fileName = `event_${req.user?.userId}_${Date.now()}_${i}.${extension}`;
 
-                    for (const pdf of pdfFiles) {
-                        // Validate PDF
-                        if (!PdfService.isValidPdf(pdf)) {
-                            console.warn('⚠️ Invalid PDF file format detected in array. Skipping.');
-                            continue;
+                                console.log(`📡 [EVENT] Uploading photo ${i + 1}/${photos.length} to S3...`);
+                                const url = await uploadToS3(buffer, fileName, contentType, 'events');
+                                s3PhotoUrls.push(url);
+                            }
+                        } catch (err) {
+                            console.error(`❌ [EVENT] Photo upload ${i} failed:`, err);
+                            s3PhotoUrls.push(img); // Fallback to Base64
+                        }
+                    } else {
+                        s3PhotoUrls.push(img); // Already a URL or other format
+                    }
+                }
+            }
+
+            // 1. HANDLE PDF UPLOADS TO S3 (OR URL PASSTHROUGH)
+            const s3PdfUrls: string[] = [];
+            if (pdfFiles && Array.isArray(pdfFiles) && pdfFiles.length > 0) {
+                for (let i = 0; i < pdfFiles.length; i++) {
+                    const pdfData = pdfFiles[i];
+
+                    // Case A: Already a URL
+                    if (pdfData.startsWith('http://') || pdfData.startsWith('https://')) {
+                        s3PdfUrls.push(pdfData);
+                        continue;
+                    }
+
+                    // Case B: Base64 (Legacy)
+                    try {
+                        let base64Content = pdfData;
+                        const matches = pdfData.match(/^data:application\/pdf;base64,(.+)$/);
+                        if (matches) {
+                            base64Content = matches[1];
                         }
 
-                        console.log('📄 Extracting text from PDF...');
-                        const text = await PdfService.extractTextFromPdf(pdf);
-                        pdfExtractedTexts.push(text);
-                        console.log(`✅ PDF text extracted. Length: ${text.length} characters`);
+                        const buffer = Buffer.from(base64Content, 'base64');
+                        const fileName = `event_doc_${req.user?.userId}_${Date.now()}_${i}.pdf`;
+
+                        console.log(`📡 [EVENT] Uploading PDF ${i + 1}/${pdfFiles.length} to S3...`);
+                        const url = await uploadToS3(buffer, fileName, 'application/pdf', 'documents');
+                        s3PdfUrls.push(url);
+                    } catch (uploadErr) {
+                        console.error(`❌ [EVENT] PDF upload ${i} failed:`, uploadErr);
+                        // Do not push fallback garbage if it fails, just skip or maybe push original if short
+                        if (pdfData.length < 200) s3PdfUrls.push(pdfData);
                     }
-                } catch (err) {
-                    console.error("❌ Failed to extract PDF text:", err);
-                    // Continue even if extraction fails
                 }
             }
 
-            // 2. RAG PIPELINE INTEGRATION (CRITICAL STEP)
-            // Generate Semantic Chunks for the PDF (Only for Events)
-            let pdfChunks: any[] = [];
-            if (pdfFiles && Array.isArray(pdfFiles) && pdfFiles.length > 0) {
-                try {
-                    const { RagPipelineService } = await import("../services/ragPipelineService");
-                    console.log('🤖 Triggering RAG Pipeline for PDFs...');
-                    pdfChunks = await RagPipelineService.processMultiplePdfs(pdfFiles);
-                    console.log(`✅ RAG Pipeline finished. Generated ${pdfChunks.length} chunks.`);
-
-                    if (pdfChunks.length === 0) {
-                        console.warn("⚠️ Warning: RAG Pipeline returned 0 chunks.");
-                    }
-                } catch (ragError: any) {
-                    console.error("❌ RAG Pipeline failed:", ragError);
-                    // Continue even if RAG fails, but log it
-                }
-            }
-
-            // 3. Generate Embeddings for the EVENT
-            let eventEmbedding: number[] = [];
-            let metadataEmbedding: number[] = [];
-            try {
-                const { EmbeddingService } = await import("../services/embeddingService");
-                const tempEvent = {
-                    name,
-                    headline,
-                    description,
-                    tags,
-                    location,
-                    pdfExtractedTexts
-                };
-
-                const metadataText = EmbeddingService.createEventMetadataText(tempEvent);
-                const eventText = EmbeddingService.createEventText(tempEvent);
-
-                if (metadataText === eventText) {
-                    // Scenario: No PDF content. Both texts are identical.
-                    // Call API ONCE, store TWICE.
-                    console.log(`📝 Generating Gemini embedding for: "${name}" (Single API call for both fields)`);
-                    const sharedEmbedding = await EmbeddingService.generateEmbedding(metadataText);
-                    metadataEmbedding = sharedEmbedding;
-                    eventEmbedding = sharedEmbedding;
-                } else {
-                    // Scenario: PDF exists. Texts are different.
-                    // Call API TWICE.
-                    console.log(`📝 Generating Gemini event embedding (incl. PDF) for: "${name}"`);
-                    eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
-
-                    console.log(`📝 Generating Gemini metadata-only embedding for: "${name}"`);
-                    metadataEmbedding = await EmbeddingService.generateEmbedding(metadataText);
-                }
-            } catch (err) {
-                console.error("❌ Failed to generate embeddings:", err);
-            }
-
-            // Create event object with EXPLICIT field assignment
+            // Create event object without embeddings/chunks
             const eventDoc = new Event();
             eventDoc.attendees = [];
-            eventDoc.pdfChunks = pdfChunks;
-            eventDoc.metadataEmbedding = metadataEmbedding;
-            eventDoc.eventEmbedding = eventEmbedding;
-            eventDoc.pdfFiles = pdfFiles || []; // Store original PDF base64s
-            eventDoc.pdfExtractedTexts = pdfExtractedTexts; // Store extracted texts
-            eventDoc.isVerified = false; // Always false on creation;
-            eventDoc.photos = photos || [];
+            eventDoc.pdfFiles = s3PdfUrls;
+            eventDoc.isVerified = false; // Always starts unverified for cost saving
+            eventDoc.photos = s3PhotoUrls;
             eventDoc.videos = videos || [];
             eventDoc.tags = tags || [];
             eventDoc.createdBy = new mongoose.Types.ObjectId(req.user.userId);
             eventDoc.name = name;
             eventDoc.headline = headline;
             eventDoc.description = description;
-            if (dateTime) {
-                eventDoc.dateTime = new Date(dateTime);
-            }
+            if (dateTime) eventDoc.dateTime = new Date(dateTime);
             eventDoc.location = location;
-
-            // CRITICAL: Explicitly set boolean flags
             eventDoc.isEvent = isEvent !== undefined ? Boolean(isEvent) : true;
             eventDoc.isCommunity = isCommunity !== undefined ? Boolean(isCommunity) : false;
-            // eventDoc.isVerified = false; // Always false on creation - already set above
+            eventDoc.isAdmin = false; // Explicitly mark as NOT admin created
 
-            console.log('💾 Saving Event with flags:');
-            console.log('   - isEvent:', eventDoc.isEvent);
-            console.log('   - isCommunity:', eventDoc.isCommunity);
-            console.log('   - isVerified:', eventDoc.isVerified);
-
+            console.log(`💾 [EVENT] Saving unverified event: ${name}. Pipeline will trigger on admin approval.`);
             const event = await eventDoc.save();
 
-            console.log('✅ Event saved. Verifying fields in saved document:');
-            console.log('   - Saved isEvent:', event.isEvent);
-            console.log('   - Saved isCommunity:', event.isCommunity);
-            console.log('   - Saved pdfFiles:', event.pdfFiles?.length || 0);
-            console.log('   - Saved pdfExtractedTexts count:', event.pdfExtractedTexts?.length || 0);
-
-            // Prepare response data (exclude large PDF data)
             const eventResponse = event.toObject();
-            delete eventResponse.pdfFiles;
-            delete eventResponse.pdfFile; // Backend compat
+            delete eventResponse.pdfFiles; // Privacy/Size
 
             res.status(201).json({
-                message: "Event created successfully",
+                message: "Event created successfully (Pending Admin Approval)",
                 data: eventResponse,
             });
         } catch (error: any) {
@@ -213,6 +181,7 @@ router.post(
 router.get(
     "/",
     authMiddleware,
+    cacheMiddleware(CacheTTL.MEDIUM), // Cache for 5 minutes
     async (req: AuthRequest, res: Response): Promise<void> => {
         try {
             if (!req.user) {
@@ -381,7 +350,7 @@ router.get(
 
 /**
  * PUT /admin/:id/verify
- * Approve an event
+ * Approve an event & Trigger RAG Pipeline (App Backend Port)
  */
 router.put(
     "/admin/:id/verify",
@@ -394,70 +363,57 @@ router.put(
             }
 
             const { id } = req.params;
+            console.log(`🎯 [APP-ADMIN] Approving event: ${id}`);
 
             const baseEvent = await Event.findById(id);
             if (!baseEvent) {
-                res.status(404).json({
-                    error: "Not Found",
-                    message: "Event not found",
-                });
+                res.status(404).json({ error: "Not Found", message: "Event not found" });
                 return;
             }
 
-            // 1. Process PDF for RAG if it exists but hasn't been processed
-            let pdfChunks = baseEvent.pdfChunks;
-            let pdfExtractedTexts = baseEvent.pdfExtractedTexts;
+            // 1. PDF & RAG PIPELINE
+            let pdfChunks = baseEvent.pdfChunks || [];
+            let pdfExtractedTexts = baseEvent.pdfExtractedTexts || [];
 
-            // Safety check: if for some reason chunks are missing, regenerate them
-            if (baseEvent.pdfFiles && baseEvent.pdfFiles.length > 0 && (!pdfChunks || pdfChunks.length === 0)) {
+            if (baseEvent.pdfFiles && baseEvent.pdfFiles.length > 0) {
                 try {
+                    const { PdfService } = await import("../services/pdfService");
                     const { RagPipelineService } = await import("../services/ragPipelineService");
-                    pdfChunks = await RagPipelineService.processMultiplePdfs(baseEvent.pdfFiles);
 
-                    if (!pdfExtractedTexts || pdfExtractedTexts.length === 0) {
-                        const { PdfService } = await import("../services/pdfService");
-                        const extracted: string[] = [];
-                        for (const pdf of baseEvent.pdfFiles) {
-                            if (PdfService.isValidPdf(pdf)) {
-                                extracted.push(await PdfService.extractTextFromPdf(pdf));
-                            }
+                    console.log('📄 [APP-ADMIN] Processing PDFs for chunks/text...');
+                    const extracted: string[] = [];
+                    for (const pdf of baseEvent.pdfFiles) {
+                        if (PdfService.isValidPdf(pdf)) {
+                            extracted.push(await PdfService.extractTextFromPdf(pdf));
                         }
-                        pdfExtractedTexts = extracted;
                     }
+                    pdfExtractedTexts = extracted;
+                    pdfChunks = await RagPipelineService.processMultiplePdfs(baseEvent.pdfFiles);
                 } catch (ragErr) {
-                    console.error("❌ Failed to process PDF during verification:", ragErr);
+                    console.error("❌ [APP-ADMIN] RAG Processing failed:", ragErr);
                 }
             }
 
-            // 2. Refresh Embeddings if missing
+            // 2. REFRESH EMBEDDINGS (Gemini)
             let eventEmbedding = baseEvent.eventEmbedding;
             let metadataEmbedding = baseEvent.metadataEmbedding;
 
             try {
                 const { EmbeddingService } = await import("../services/embeddingService");
+                const tempObj = { ...baseEvent.toObject(), pdfExtractedTexts };
+                const metadataText = EmbeddingService.createEventMetadataText(tempObj);
+                const eventText = EmbeddingService.createEventText(tempObj);
 
-                if ((!eventEmbedding || eventEmbedding.length === 0) || (!metadataEmbedding || metadataEmbedding.length === 0)) {
-                    const metadataText = EmbeddingService.createEventMetadataText(baseEvent.toObject());
-                    const eventText = EmbeddingService.createEventText({
-                        ...baseEvent.toObject(),
-                        pdfExtractedTexts
-                    });
-
-                    if (metadataText === eventText) {
-                        const sharedEmbedding = await EmbeddingService.generateEmbedding(metadataText);
-                        eventEmbedding = sharedEmbedding;
-                        metadataEmbedding = sharedEmbedding;
-                    } else {
-                        if (!eventEmbedding || eventEmbedding.length === 0) {
-                            eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
-                        }
-                        if (!metadataEmbedding || metadataEmbedding.length === 0) {
-                            metadataEmbedding = await EmbeddingService.generateEmbedding(metadataText);
-                        }
-                    }
+                if (metadataText === eventText) {
+                    const shared = await EmbeddingService.generateEmbedding(metadataText);
+                    eventEmbedding = shared;
+                    metadataEmbedding = shared;
+                } else {
+                    eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+                    metadataEmbedding = await EmbeddingService.generateEmbedding(metadataText);
                 }
-            } catch (err) {
-                console.error("Failed to generate embeddings during verification:", err);
+            } catch (embErr) {
+                console.error("❌ [APP-ADMIN] Embedding failed:", embErr);
             }
 
             const event = await Event.findByIdAndUpdate(
@@ -467,13 +423,14 @@ router.put(
                     eventEmbedding,
                     metadataEmbedding,
                     pdfChunks,
-                    pdfExtractedTexts
+                    pdfExtractedTexts,
+                    isActive: true
                 },
                 { new: true }
             );
 
             res.status(200).json({
-                message: "Event verified successfully",
+                message: "Event verified and semantic pipeline processed",
                 data: event,
             });
         } catch (error: any) {
@@ -696,70 +653,139 @@ router.put(
                 return;
             }
 
-            // 1. HANDLE PDF UPDATE
-            if (updates.pdfFiles && Array.isArray(updates.pdfFiles) && updates.pdfFiles.length > 0) {
+            // Handle media deletions from S3
+            const deletedPhotos = updates.deletedPhotos || [];
+            const deletedPdfs = updates.deletedPdfs || [];
+            const deletedVideos = updates.deletedVideos || [];
+            const allDeletions = [...deletedPhotos, ...deletedPdfs, ...deletedVideos];
+
+            if (allDeletions.length > 0) {
+                console.log(`🗑️  [EVENT UPDATE] Deleting ${allDeletions.length} files from S3...`);
                 try {
-                    console.log(`📄 UPDATE: ${updates.pdfFiles.length} PDFs modified. Updating chunks and embeddings...`);
-                    const { PdfService } = await import("../services/pdfService");
-                    const { RagPipelineService } = await import("../services/ragPipelineService");
-
-                    const extractedTexts: string[] = [];
-                    for (const pdf of updates.pdfFiles) {
-                        if (PdfService.isValidPdf(pdf)) {
-                            const text = await PdfService.extractTextFromPdf(pdf);
-                            extractedTexts.push(text);
-                        }
-                    }
-                    updates.pdfExtractedTexts = extractedTexts;
-                    updates.pdfChunks = await RagPipelineService.processMultiplePdfs(updates.pdfFiles);
-
-                    // Regenerate combined/PDF embedding
-                    const { EmbeddingService } = await import("../services/embeddingService");
-                    const eventText = EmbeddingService.createEventText({
-                        ...existingEvent.toObject(),
-                        ...updates
-                    });
-                    updates.eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+                    await deleteMultipleFromS3(allDeletions);
                 } catch (err) {
-                    console.error("❌ Failed to process PDF update:", err);
+                    console.error('❌ [EVENT UPDATE] S3 deletion failed:', err);
+                    // Continue anyway - MongoDB will be updated
                 }
             }
 
-            // 2. REGENERATE METADATA EMBEDDING IF TEXT CHANGED
-            const metadataFields = ['name', 'headline', 'description', 'location', 'tags'];
-            const hasMetadataChanges = metadataFields.some(field => updates[field] !== undefined);
+            // Remove deletion arrays from updates
+            delete updates.deletedPhotos;
+            delete updates.deletedPdfs;
+            delete updates.deletedVideos;
 
-            if (hasMetadataChanges || updates.pdfFiles) {
-                try {
-                    const { EmbeddingService } = await import("../services/embeddingService");
-                    const metadataText = EmbeddingService.createEventMetadataText({
-                        ...existingEvent.toObject(),
-                        ...updates
-                    });
-                    const eventText = EmbeddingService.createEventText({
-                        ...existingEvent.toObject(),
-                        ...updates
-                    });
+            // 0. HANDLE IMAGE UPLOADS TO S3 (For Updates)
+            if (updates.photos && Array.isArray(updates.photos)) {
+                const s3PhotoUrls: string[] = [];
+                for (let i = 0; i < updates.photos.length; i++) {
+                    const img = updates.photos[i];
+                    if (img.startsWith('data:image')) {
+                        try {
+                            const matches = img.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+                            if (matches && matches.length === 3) {
+                                const contentType = matches[1];
+                                const buffer = Buffer.from(matches[2], 'base64');
+                                const extension = contentType.split('/')[1] || 'png';
+                                const fileName = `event_${req.user?.userId}_${Date.now()}_update_${i}.${extension}`;
 
-                    if (metadataText === eventText) {
-                        console.log('📝 UPDATE: Metadata modified (No PDF). Regenerating shared embedding...');
-                        const sharedEmbedding = await EmbeddingService.generateEmbedding(metadataText);
-                        updates.metadataEmbedding = sharedEmbedding;
-                        updates.eventEmbedding = sharedEmbedding;
+                                console.log(`📡 [EVENT UPDATE] Uploading photo ${i + 1}/${updates.photos.length} to S3...`);
+                                const url = await uploadToS3(buffer, fileName, contentType, 'events', id, 'images');
+                                s3PhotoUrls.push(url);
+                            } else {
+                                s3PhotoUrls.push(img); // Fallback if match fails
+                            }
+                        } catch (err) {
+                            console.error(`❌ [EVENT UPDATE] Photo upload ${i} failed:`, err);
+                            s3PhotoUrls.push(img); // Fallback
+                        }
                     } else {
-                        if (hasMetadataChanges) {
-                            console.log('📝 UPDATE: Metadata modified. Regenerating metadata embedding...');
-                            updates.metadataEmbedding = await EmbeddingService.generateEmbedding(metadataText);
+                        // Existing URL
+                        s3PhotoUrls.push(img);
+                    }
+                }
+                updates.photos = s3PhotoUrls;
+            }
+
+            // 1. HANDLE PDF UPLOADS TO S3 (For Updates)
+            if (updates.pdfFiles && Array.isArray(updates.pdfFiles)) {
+                const s3PdfUrls: string[] = [];
+                for (let i = 0; i < updates.pdfFiles.length; i++) {
+                    const pdfItem = updates.pdfFiles[i];
+                    if (pdfItem.startsWith('data:')) {
+                        try {
+                            const matches = pdfItem.match(/^data:application\/pdf;base64,(.+)$/);
+                            const base64Content = matches ? matches[1] : pdfItem;
+                            const buffer = Buffer.from(base64Content, 'base64');
+                            const fileName = `event_doc_${req.user?.userId}_${Date.now()}_update_${i}.pdf`;
+
+                            console.log(`📡 [EVENT UPDATE] Uploading PDF ${i + 1}/${updates.pdfFiles.length} to S3...`);
+                            const url = await uploadToS3(buffer, fileName, 'application/pdf', 'documents', id, 'pdfs');
+                            s3PdfUrls.push(url);
+                        } catch (uploadErr) {
+                            console.error(`❌ [EVENT UPDATE] PDF upload ${i} failed:`, uploadErr);
+                            // If upload fails, we can't really do much. Pushing base64 is bad, but keeping strict typing?
+                            // Let's omit failed uploads or push as is.
+                            s3PdfUrls.push(pdfItem.substring(0, 100)); // Fallback placeholder to fail gracefully
                         }
-                        if (updates.pdfFiles) {
-                            console.log('📝 UPDATE: PDF modified. Regenerating event embedding...');
-                            updates.eventEmbedding = await EmbeddingService.generateEmbedding(eventText);
+                    } else {
+                        // Existing URL
+                        s3PdfUrls.push(pdfItem);
+                    }
+                }
+                updates.pdfFiles = s3PdfUrls;
+            }
+
+            // 1. CHECK IF PDFs CHANGED
+            let pdfsChanged = false;
+            if (updates.pdfFiles) {
+                // If the array length differs, or any content differs
+                const currentPdfs = existingEvent.pdfFiles || [];
+                const newPdfs = updates.pdfFiles;
+
+                if (currentPdfs.length !== newPdfs.length) {
+                    pdfsChanged = true;
+                } else {
+                    // Check for different URL
+                    for (let i = 0; i < newPdfs.length; i++) {
+                        if (newPdfs[i] !== currentPdfs[i]) {
+                            pdfsChanged = true;
+                            break;
                         }
                     }
-                } catch (err) {
-                    console.error("❌ Failed to regenerate embeddings during update:", err);
                 }
             }
+
+            // 2. HANDLE PDF UPDATE (ONLY IF CHANGED)
+            // 2. HANDLE PDF UPDATE (ONLY IF CHANGED)
+            if (pdfsChanged) {
+                // We do NOT run extraction here anymore. Admin backend handles it.
+                // Just clear the old extracted data so it's inconsistent until verified.
+                console.log(`📄 UPDATE: PDFs changed. Clearing old extracted data. Pipeline will run on Admin Verify.`);
+                updates.pdfExtractedTexts = [];
+                updates.pdfChunks = [];
+
+                // Also clear embeddings as they are now stale
+                updates.eventEmbedding = [];
+                updates.metadataEmbedding = [];
+            } else {
+                // Even if PDFs didn't change, if metadata changed, embeddings are stale.
+                // But for now, we can leave them OR clear them. 
+                // Safest is to leave them if only metadata changed, but admin will overwrite anyway.
+                // However, "isVerified: false" will hide it solely based on that flag.
+
+                // Let's NOT clear if unchanged, just in case they revert edit?
+                // Actually, standard flow: Edit -> Unverified -> Admin Verify -> New Embeddings.
+            }
+
+            // 3. EMBEDDINGS ARE HANDLED BY ADMIN BACKEND ONLY
+            // App backend does NOT generate event/community embeddings
+            // Only admin backend generates embeddings after verification
+            // This saves API costs and ensures only verified events are searchable
+
+            // 3. FORCE RE-VERIFICATION ON EDIT
+            // Any update to content requires admin to re-verify
+            updates.isVerified = false;
+            console.log('🔒 Update detected. Resetting isVerified to false.');
 
             const event = await Event.findByIdAndUpdate(id, updates, {
                 new: true,

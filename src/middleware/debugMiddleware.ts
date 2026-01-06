@@ -106,20 +106,22 @@ export const debugLogger = (
     }
 
     // REDACT EMBEDDINGS
-    const redactEmbeddings = (obj: any) => {
+    const redactEmbeddings = (obj: any): void => {
       if (!obj || typeof obj !== 'object') return;
 
       const targets = ['eventEmbedding', 'metadataEmbedding', 'profileEmbedding'];
       targets.forEach(key => {
-        if (obj[key]) obj[key] = "[Vector Embedding Data - REDACTED]";
+        if (obj[key] && Array.isArray(obj[key])) {
+          obj[key] = "[Vector Embedding Data - REDACTED]";
+        }
       });
 
-      // Recurse into data array if it exists
-      if (Array.isArray(obj.data)) {
-        obj.data.forEach((item: any) => redactEmbeddings(item));
-      } else if (obj.data) {
-        redactEmbeddings(obj.data);
-      }
+      // Recurse into nested objects
+      Object.keys(obj).forEach(key => {
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+          redactEmbeddings(obj[key]);
+        }
+      });
     };
 
     redactEmbeddings(sanitizedResponse);

@@ -3,88 +3,69 @@ const pdfParse = require("pdf-parse");
 // Simple wrapper for pdf text extraction
 export class PdfService {
     /**
-     * Extract text from a base64 encoded PDF
-     * @param base64Pdf - Base64 encoded PDF string
+     * Validate if the string is a valid PDF (Base64 or URL)
+     * @param input - Base64 encoded string or URL
+     * @returns true if valid PDF, false otherwise
+     */
+    static isValidPdf(input: string): boolean {
+        if (!input) return false;
+
+        // Check if URL
+        // Strict enforcement: Must be an HTTP/HTTPS URL
+        if (input.startsWith('http://') || input.startsWith('https://')) {
+            // Basic check if it likely points to a file or S3 bucket
+            return input.includes('.pdf') || input.includes('amazonaws.com') || input.includes('waytree');
+        }
+
+        return false;
+    }
+
+    /**
+     * Helper to get buffer from URL
+     */
+    private static async getPdfBuffer(input: string): Promise<Buffer> {
+        if (input.startsWith('http')) {
+            console.log('   - Fetching PDF from URL...');
+            const response = await fetch(input);
+            if (!response.ok) throw new Error(`Failed to fetch PDF from URL: ${response.statusText}`);
+            const arrayBuffer = await response.arrayBuffer();
+            return Buffer.from(arrayBuffer);
+        } else {
+            throw new Error('Invalid input: Base64 is no longer supported. Please provide a valid S3 URL.');
+        }
+    }
+
+    /**
+     * Extract text from a base64 encoded PDF or URL
+     * @param pdfInput - Base64 encoded PDF string or URL
      * @returns Extracted text from the PDF
      */
-    static async extractTextFromPdf(base64Pdf: string): Promise<string> {
+    static async extractTextFromPdf(pdfInput: string): Promise<string> {
         try {
             console.log('📄 Starting PDF extraction...');
-            console.log('   - Input length:', base64Pdf.length);
 
-            // Remove data URL prefix if present (e.g., "data:application/pdf;base64,")
-            const base64Data = base64Pdf.includes(',')
-                ? base64Pdf.split(',')[1]
-                : base64Pdf;
-
-            console.log('   - Base64 data length after cleanup:', base64Data.length);
-
-            // Convert base64 to buffer
-            const pdfBuffer = Buffer.from(base64Data, 'base64');
+            // Get buffer (handle URL vs Base64)
+            const pdfBuffer = await this.getPdfBuffer(pdfInput);
             console.log('   - Buffer size:', pdfBuffer.length, 'bytes');
 
             // Check if buffer looks like a PDF
             const header = pdfBuffer.toString('utf8', 0, 5);
-            console.log('   - File header:', header);
-
             if (!header.startsWith('%PDF')) {
                 throw new Error('Invalid PDF format - header does not start with %PDF');
             }
 
             console.log('   - Extracting text using pdf-parse...');
-
-            // Debug pdf-parse structure to fix import issue
-            console.log('   - pdf-parse structure keys:', Object.keys(pdfParse));
-
-            // Try to find the function
             let parser = pdfParse;
+            // ... (keep existing resolution logic if needed, or simplify if environment is stable)
+            // Assuming environment is stable now, but safer to keep:
             if (typeof parser !== 'function') {
-                if (parser.default && typeof parser.default === 'function') {
-                    parser = parser.default;
-                } else if (parser.PDFParse) {
-                    console.log('   - Found pdfParse.PDFParse export, using it.');
-                    parser = parser.PDFParse;
-                } else {
-                    console.log('   - pdf-parse is not a function and has no default export.');
-                    // Fallback: try to find ANYTHING that looks like a function or just throw with more info
-                    // Some versions might export a class or a named function?
-                    // CommonCommonJS pattern: module.exports = function... 
-                    // If it is an object, maybe it's { pdfParse: [Function] }?
-                }
+                if (parser.default && typeof parser.default === 'function') parser = parser.default;
+                else if (parser.PDFParse) parser = parser.PDFParse;
             }
 
-            // Final check
-            if (typeof parser !== 'function' && typeof parser !== 'object') { // loose check to allow class
-                throw new Error(`pdf-parse library resolution failed. Type: ${typeof pdfParse}, Keys: ${Object.keys(pdfParse).join(', ')}`);
-            }
-
-            let data;
-            try {
-                // Try calling as function (standard lib)
-                data = await parser(pdfBuffer);
-            } catch (err: any) {
-                console.log('   - Function call failed, trying new instance...');
-                // Fallback for some variants: new Parser(buffer)
-                if (err.message && err.message.includes("constructor")) {
-                    // If it's a class
-                    new parser(pdfBuffer);
-                    // Assume it has a parse method or similar? 
-                    // Standard pdf-parse returns a promise.
-                    // If this is a weird lib, we might need to inspect it.
-                    // But let's hope it's just the function wrapped in a property.
-                    throw err;
-                }
-                throw err;
-            }
-
+            const data = await parser(pdfBuffer);
             const extractedText = data.text;
-
-
             console.log('   - Extraction complete');
-
-            // Log only first two lines as requested
-            const lines = extractedText.split('\n').slice(0, 2);
-            console.log('   - Scanned Text Prefix (Raw):', lines.join('\n'));
 
             const finalCleanedText = PdfService.cleanText(extractedText);
             console.log('   - CleanText length:', finalCleanedText.length);
@@ -119,27 +100,5 @@ export class PdfService {
         cleaned = cleaned.replace(/\n\s*\n+/g, '\n\n');
 
         return cleaned.trim();
-    }
-
-
-    /**
-     * Validate if the base64 string is a valid PDF
-     * @param base64String - Base64 encoded string
-     * @returns true if valid PDF, false otherwise
-     */
-    static isValidPdf(base64String: string): boolean {
-        try {
-            const base64Data = base64String.includes(',')
-                ? base64String.split(',')[1]
-                : base64String;
-
-            const buffer = Buffer.from(base64Data, 'base64');
-
-            // Check PDF magic number (starts with %PDF)
-            const header = buffer.toString('utf8', 0, 4);
-            return header === '%PDF';
-        } catch {
-            return false;
-        }
     }
 }

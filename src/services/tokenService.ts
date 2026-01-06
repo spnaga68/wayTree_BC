@@ -15,7 +15,7 @@ export const generateAccessToken = (userId: string, email: string): string => {
   };
 
   return jwt.sign(payload, config.jwtSecret, {
-    expiresIn: "1h", // 1 hour
+    expiresIn: "1d", // 1 day
   });
 };
 

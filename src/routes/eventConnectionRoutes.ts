@@ -13,7 +13,7 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Toggle event participation (join/leave)
-router.post('/toggle', toggleEventParticipation);
+router.post('/toggle-participation', toggleEventParticipation);
 
 // Check if user has joined an event
 router.get('/check/:eventId/:participantId', checkEventParticipation);

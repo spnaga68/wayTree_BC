@@ -24,6 +24,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.958.0",
     "@google/generative-ai": "^0.24.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
@@ -53,6 +54,7 @@
     "nodemailer": "^7.0.10",
     "pdf-parse": "^1.1.1",
     "qrcode": "^1.5.4",
+    "redis": "^5.10.0",
     "rimraf": "^6.1.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3",

@@ -1,9 +1,15 @@
 import { Router, Response } from "express";
 import { authMiddleware } from "../middleware/authMiddleware";
+import { cacheMiddleware, invalidateCache } from "../middleware/cacheMiddleware";
+const { CacheTTL } = require("../services/cacheService");
 import { AuthRequest } from "../types";
 import { User } from "../models/User";
+import { uploadToS3 } from "../services/s3Service";
 
 const router = Router();
+
+// Invalidate cache on all mutations
+router.use(invalidateCache('route:/api/users'));
 
 /**
  * GET /me
@@ -12,6 +18,7 @@ const router = Router();
 router.get(
   "/me",
   authMiddleware,
+  cacheMiddleware(CacheTTL.SHORT), // Cache for 1 minute (user-specific)
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       if (!req.user) {
@@ -95,6 +102,25 @@ router.put(
       for (const field of allowedFields) {
         if (req.body[field] !== undefined) {
           updates[field] = req.body[field];
+        }
+      }
+
+      // 0. HANDLE PROFILE IMAGE UPLOAD TO S3
+      if (updates.photoUrl && updates.photoUrl.startsWith('data:image')) {
+        try {
+          console.log(`📡 [PROFILE] Uploading new Base64 profile image to S3 for user: ${req.user.userId}`);
+          const matches = updates.photoUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+          if (matches && matches.length === 3) {
+            const contentType = matches[1];
+            const buffer = Buffer.from(matches[2], 'base64');
+            const extension = contentType.split('/')[1] || 'png';
+            const fileName = `profile_${req.user.userId}_${Date.now()}.${extension}`;
+
+            updates.photoUrl = await uploadToS3(buffer, fileName, contentType, 'profiles');
+            console.log(`✅ [PROFILE] S3 URL stored: ${updates.photoUrl}`);
+          }
+        } catch (err) {
+          console.error("❌ [PROFILE] S3 upload failed, keeping Base64 as fallback", err);
         }
       }
 
@@ -231,6 +257,7 @@ router.put(
 router.get(
   "/:id",
   authMiddleware,
+  cacheMiddleware(CacheTTL.LONG), // Cache for 15 minutes (profiles change rarely)
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const userId = req.params.id;
@@ -307,10 +334,29 @@ router.post(
         return;
       }
 
-      // Update user profile with new image URL (Base64 string)
+      // 1. Upload Base64 to S3
+      let imageUrl = image;
+      try {
+        console.log(`📡 [PROFILE] Uploading Base64 image to S3 for user: ${userId}`);
+        const matches = image.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          const contentType = matches[1];
+          const buffer = Buffer.from(matches[2], 'base64');
+          const extension = contentType.split('/')[1] || 'png';
+          const fileName = `avatar_${userId}_${Date.now()}.${extension}`;
+
+          imageUrl = await uploadToS3(buffer, fileName, contentType, 'profiles');
+          console.log(`✅ [PROFILE] S3 URL stored: ${imageUrl}`);
+        }
+      } catch (err) {
+        console.error("❌ [PROFILE] S3 upload failed, returning Base64", err);
+        // Fallback to Base64 if S3 fails
+      }
+
+      // 2. Update user profile with new image URL
       const user = await User.findByIdAndUpdate(
         userId,
-        { photoUrl: image },
+        { photoUrl: imageUrl },
         { new: true }
       ).exec();
 
@@ -325,7 +371,7 @@ router.post(
       res.status(200).json({
         success: true,
         message: "Profile image uploaded successfully",
-        imageUrl: image, // Return the Base64 string
+        imageUrl: imageUrl, // Return the S3 URL (or Base64 fallback)
         user: {
           id: user._id.toString(),
           email: user.email,

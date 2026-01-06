@@ -142,7 +142,7 @@ export const EventAssistantService = {
                 };
             }
 
-            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
             const finalPrompt = `${systemPrompt}\n\n${userContent}`;
 
             const result = await model.generateContent(finalPrompt);
@@ -177,6 +177,7 @@ export const EventAssistantService = {
 
 // Utility for cosine similarity
 function cosineSimilarity(vecA: number[], vecB: number[]) {
+    if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
     let dotProduct = 0;
     let normA = 0;
     let normB = 0;
