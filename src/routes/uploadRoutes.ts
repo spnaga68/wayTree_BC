@@ -14,13 +14,14 @@ router.post(
     "/",
     authMiddleware,
     upload.single("file"),
-    async (req: AuthRequest, res: Response) => {
+    async (req: AuthRequest, res: Response): Promise<void> => {
         try {
-            console.log(`📁 [UPLOAD] Received upload request from user: ${req.user?._id}`);
+            console.log(`📁 [UPLOAD] Received upload request from user: ${req.user?.userId}`);
 
             if (!req.file) {
                 console.warn("⚠️ [UPLOAD] No file provided in request");
-                return res.status(400).json({ error: "No file uploaded" });
+                res.status(400).json({ error: "No file uploaded" });
+                return;
             }
 
             const folder = req.body.folder || "general";
@@ -31,7 +32,7 @@ router.post(
                 folder
             );
 
-            console.log(`✅ [UPLOAD] File uploaded successfully for user ${req.user?._id}: ${fileUrl}`);
+            console.log(`✅ [UPLOAD] File uploaded successfully for user ${req.user?.userId}: ${fileUrl}`);
 
             res.status(200).json({
                 message: "File uploaded successfully",

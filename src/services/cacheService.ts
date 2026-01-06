@@ -4,6 +4,10 @@
  */
 
 class CacheService {
+    private cache: Map<string, any>;
+    private expiryTimes: Map<string, number>;
+    private defaultTTL: number;
+
     constructor() {
         this.cache = new Map();
         this.expiryTimes = new Map();
@@ -13,14 +17,14 @@ class CacheService {
     /**
      * Generate cache key
      */
-    generateKey(prefix, identifier) {
+    generateKey(prefix: string, identifier: string): string {
         return `${prefix}:${identifier}`;
     }
 
     /**
      * Set value in cache
      */
-    set(key, value, ttl = this.defaultTTL) {
+    set(key: string, value: any, ttl: number = this.defaultTTL): boolean {
         this.cache.set(key, value);
         this.expiryTimes.set(key, Date.now() + ttl);
         console.log(`💾 [CACHE] Stored: ${key} (TTL: ${ttl}ms)`);
@@ -30,7 +34,7 @@ class CacheService {
     /**
      * Get value from cache
      */
-    get(key) {
+    get(key: string): any {
         const expiry = this.expiryTimes.get(key);
 
         if (!expiry || Date.now() > expiry) {
@@ -46,7 +50,7 @@ class CacheService {
     /**
      * Delete cache entry
      */
-    delete(key) {
+    delete(key: string): boolean {
         this.cache.delete(key);
         this.expiryTimes.delete(key);
         return true;
@@ -55,7 +59,7 @@ class CacheService {
     /**
      * Clear all cache
      */
-    clear() {
+    clear(): boolean {
         this.cache.clear();
         this.expiryTimes.clear();
         console.log('🗑️ [CACHE] Cleared all entries');
@@ -65,7 +69,7 @@ class CacheService {
     /**
      * Clear cache by pattern
      */
-    clearPattern(pattern) {
+    clearPattern(pattern: string): number {
         const regex = new RegExp(pattern);
         let cleared = 0;
 
@@ -83,7 +87,7 @@ class CacheService {
     /**
      * Get cache statistics
      */
-    getStats() {
+    getStats(): { size: number; keys: string[] } {
         return {
             size: this.cache.size,
             keys: Array.from(this.cache.keys())
@@ -93,7 +97,7 @@ class CacheService {
     /**
      * Clean expired entries (run periodically)
      */
-    cleanExpired() {
+    cleanExpired(): number {
         const now = Date.now();
         let cleaned = 0;
 
@@ -120,10 +124,10 @@ setInterval(() => {
     cacheService.cleanExpired();
 }, 10 * 60 * 1000);
 
-module.exports = cacheService;
+export default cacheService;
 
 // Cache TTL presets
-module.exports.CacheTTL = {
+export const CacheTTL = {
     SHORT: 1 * 60 * 1000,      // 1 minute
     MEDIUM: 5 * 60 * 1000,     // 5 minutes
     LONG: 15 * 60 * 1000,      // 15 minutes

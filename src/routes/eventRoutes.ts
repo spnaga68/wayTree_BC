@@ -217,7 +217,7 @@ router.get(
                         $vectorSearch: {
                             index: "vector_index",
                             path,
-                            queryVector: user.profileEmbedding,
+                            queryVector: user.profileEmbedding as number[],
                             numCandidates: 100,
                             limit: 20
                         }
@@ -508,7 +508,7 @@ router.get(
                 $vectorSearch: {
                     index: "vector_index",
                     path,
-                    queryVector: user.profileEmbedding,
+                    queryVector: user.profileEmbedding as number[],
                     numCandidates: 100,
                     limit: 10
                 }

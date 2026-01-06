@@ -8,7 +8,7 @@ import {
   generateAccessToken,
   createRefreshToken,
   deleteAllUserRefreshTokens,
-  deleteRefreshTokenByDevice,
+
   getUserSessions,
   deleteRefreshTokenById,
 } from "../services/tokenService";
