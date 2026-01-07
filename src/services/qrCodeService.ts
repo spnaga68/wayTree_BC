@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { uploadToS3 } from "./s3Service";
+import { uploadToS3, deleteFromS3 } from "./s3Service";
 
 /**
  * QR Code Service for generating and managing QR codes for network codes
@@ -45,10 +45,10 @@ export class QRCodeService {
       // Upload to S3
       console.log(`📡 [QR-SERVICE] Uploading QR code for ${codeId} to S3...`);
       const matches = qrCodeDataURL.match(/^data:image\/png;base64,(.+)$/);
-      if (matches && matches.length === 3) {
-        const buffer = Buffer.from(matches[2], 'base64');
+      if (matches && matches[1]) {
+        const buffer = Buffer.from(matches[1], 'base64');
         const fileName = `qrcode_${codeId}_${Date.now()}.png`;
-        const s3Url = await uploadToS3(buffer, fileName, 'image/png', 'qrcodes');
+        const s3Url = await uploadToS3(buffer, fileName, 'image/png', 'network-codes');
         console.log(`✅ [QR-SERVICE] QR code S3 URL: ${s3Url}`);
         return s3Url;
       }
@@ -61,11 +61,17 @@ export class QRCodeService {
   }
 
   /**
-   * Delete QR code (No-op for Base64)
+   * Delete QR code from S3
    */
-  static async deleteQRCode(_qrCodeUrl: string): Promise<void> {
-    // No-op since we are using Base64 strings stored in DB
-    return;
+  static async deleteQRCode(qrCodeUrl: string): Promise<void> {
+    if (!qrCodeUrl || qrCodeUrl.startsWith('data:')) return; // Ignore base64
+
+    try {
+      await deleteFromS3(qrCodeUrl);
+      console.log(`🗑️ [QR-SERVICE] Deleted QR code from S3: ${qrCodeUrl}`);
+    } catch (error) {
+      console.error("Error deleting QR code:", error);
+    }
   }
 
   /**
@@ -100,10 +106,10 @@ export class QRCodeService {
 
       // Upload to S3
       const matches = qrCodeDataURL.match(/^data:image\/png;base64,(.+)$/);
-      if (matches && matches.length === 3) {
-        const buffer = Buffer.from(matches[2], 'base64');
+      if (matches && matches[1]) {
+        const buffer = Buffer.from(matches[1], 'base64');
         const fileName = `qrcode_simple_${Date.now()}.png`;
-        return await uploadToS3(buffer, fileName, 'image/png', 'qrcodes');
+        return await uploadToS3(buffer, fileName, 'image/png', 'network-codes');
       }
 
       return qrCodeDataURL;
