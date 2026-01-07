@@ -142,12 +142,22 @@ export const EventAssistantService = {
                 };
             }
 
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            let finalAnswer = "I couldn't generate an answer.";
+            const models = ["gemini-1.5-flash", "gemini-pro"];
             const finalPrompt = `${systemPrompt}\n\n${userContent}`;
 
-            const result = await model.generateContent(finalPrompt);
-            const response = await result.response;
-            const finalAnswer = response.text() || "I couldn't generate an answer.";
+            for (const modelName of models) {
+                try {
+                    const model = genAI.getGenerativeModel({ model: modelName });
+                    const result = await model.generateContent(finalPrompt);
+                    const response = await result.response;
+                    finalAnswer = response.text();
+                    if (finalAnswer) break;
+                } catch (e: any) {
+                    console.log(`⚠️ ${modelName} failed: ${e.message}`);
+                    if (modelName === models[models.length - 1]) throw e;
+                }
+            }
 
             return {
                 answer: finalAnswer,
