@@ -55,22 +55,58 @@ export class PdfService {
             }
 
             console.log('   - Extracting text using pdf-parse...');
-            let parser = pdfParse;
-            // ... (keep existing resolution logic if needed, or simplify if environment is stable)
-            // Assuming environment is stable now, but safer to keep:
-            if (typeof parser !== 'function') {
-                if (parser.default && typeof parser.default === 'function') parser = parser.default;
-                else if (parser.PDFParse) parser = parser.PDFParse;
+            let parserLib: any = pdfParse;
+
+            // Strategy 1: Standard v1 Function
+            if (typeof parserLib === 'function') {
+                const data = await parserLib(pdfBuffer);
+                const extractingText = data.text;
+                // Normalize return to match expected flow
+                return PdfService.cleanText(extractingText);
             }
 
-            const data = await parser(pdfBuffer);
-            const extractedText = data.text;
-            console.log('   - Extraction complete');
+            // Strategy 2: v2 Class (PDFParse property)
+            if (parserLib.PDFParse && typeof parserLib.PDFParse === 'function') {
+                const dataBytes = new Uint8Array(pdfBuffer);
 
-            const finalCleanedText = PdfService.cleanText(extractedText);
-            console.log('   - CleanText length:', finalCleanedText.length);
+                try {
+                    console.log('   - [RESOLVE] Found PDFParse class. Attempting v2 class-based extraction.');
+                    // Strategy A: Instantiate -> Load with data object
+                    const parser = new parserLib.PDFParse({ verbosity: 0 });
+                    await parser.load({ data: dataBytes });
 
-            return finalCleanedText;
+                    const text = await parser.getText();
+                    const rawText = (typeof text === 'string') ? text : (text.text || "");
+                    return PdfService.cleanText(rawText);
+                } catch (classErr: any) {
+                    console.error("   - [WARN] Class Strategy A (load) failed:", classErr.message);
+
+                    // Fallback Strategy B: Constructor Data directly
+                    try {
+                        const parser = new parserLib.PDFParse(dataBytes);
+                        if (typeof parser.getText === 'function') {
+                            const text = await parser.getText();
+                            const rawText = (typeof text === 'string') ? text : (text.text || "");
+                            return PdfService.cleanText(rawText);
+                        }
+                        throw new Error("Constructor accepted data but no getText method found.");
+                    } catch (classErrB: any) {
+                        throw new Error(`All PDFParse class strategies failed. Original error: ${classErr.message}`);
+                    }
+                }
+            }
+
+            // Strategy 3: ESM Default
+            if (parserLib.default && typeof parserLib.default === 'function') {
+                const data = await parserLib.default(pdfBuffer);
+                return PdfService.cleanText(data.text);
+            }
+
+            throw new Error(`Unsupported pdf-parse library structure. Keys: ${Object.keys(parserLib).join(', ')}`);
+
+            // Unreachable fallback for flow
+            // const data = await parser(pdfBuffer);
+
         } catch (error: any) {
             console.error('❌ PDF extraction error details:', error.message);
             throw new Error(`Failed to process PDF: ${error.message}`);
