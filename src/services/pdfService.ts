@@ -1,4 +1,4 @@
-const pdfParse = require("pdf-parse");
+import pdfParse from "pdf-parse";
 
 // Simple wrapper for pdf text extraction
 export class PdfService {
