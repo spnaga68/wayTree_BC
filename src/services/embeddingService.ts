@@ -19,10 +19,12 @@ export const EmbeddingService = {
                 return [];
             }
 
-            if (!genAI) {
+            if (!genAI || !apiKey) {
                 console.error("❌ GEMINI_API_KEY is missing. Cannot generate embedding.");
                 return [];
             }
+
+            console.log(`🔑 [DEBUG] Embedding using Key: ${apiKey.substring(0, 5)}...`);
 
             const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
 
