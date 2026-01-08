@@ -1,4 +1,5 @@
-import { Router, Response } from "express";
+import { Router, Request, Response } from "express";
+import cacheService from "../services/cacheService"; // Import CacheService
 import mongoose from "mongoose";
 import { authMiddleware } from "../middleware/authMiddleware";
 import { cacheMiddleware, invalidateCache } from "../middleware/cacheMiddleware";
@@ -28,10 +29,13 @@ router.post(
             console.log('   - isEvent:', req.body.isEvent);
             console.log('   - isCommunity:', req.body.isCommunity);
             const sanitizedBody = { ...req.body };
-            if (sanitizedBody.pdfFiles) {
-                sanitizedBody.pdfFiles = sanitizedBody.pdfFiles.map((p: string) => `[Base64 PDF Data - ${p.length} chars]`);
+            // Removed duplicate logging and variable declaration
+            if (sanitizedBody.pdfFiles && Array.isArray(sanitizedBody.pdfFiles)) {
+                sanitizedBody.pdfFiles = sanitizedBody.pdfFiles.map((p: string, idx: number) =>
+                    `[PDF #${idx}]Length: ${p.length} chars.Start: ${p.substring(0, 50)}...`
+                );
             }
-            console.log('   - Body JSON:', JSON.stringify(sanitizedBody).substring(0, 1000) + '...'); // Limit log length
+            console.log('   - Body JSON:', JSON.stringify(sanitizedBody).substring(0, 2000)); // Increased log length
 
             if (!req.user) {
                 console.log('❌ Unauthorized: No user');
@@ -86,9 +90,9 @@ router.post(
                                 const contentType = matches[1];
                                 const buffer = Buffer.from(matches[2], 'base64');
                                 const extension = contentType.split('/')[1] || 'png';
-                                const fileName = `event_${req.user?.userId}_${Date.now()}_${i}.${extension}`;
+                                const fileName = `event_${req.user?.userId}_${Date.now()}_${i}.${extension} `;
 
-                                console.log(`📡 [EVENT] Uploading photo ${i + 1}/${photos.length} to S3...`);
+                                console.log(`📡[EVENT] Uploading photo ${i + 1}/${photos.length} to S3...`);
                                 const url = await uploadToS3(buffer, fileName, contentType, 'events');
                                 s3PhotoUrls.push(url);
                             }
@@ -105,11 +109,14 @@ router.post(
             // 1. HANDLE PDF UPLOADS TO S3 (OR URL PASSTHROUGH)
             const s3PdfUrls: string[] = [];
             if (pdfFiles && Array.isArray(pdfFiles) && pdfFiles.length > 0) {
+                console.log(`Processing ${pdfFiles.length} PDF items...`);
                 for (let i = 0; i < pdfFiles.length; i++) {
                     const pdfData = pdfFiles[i];
+                    console.log(`   - [PDF #${i}] Raw length: ${pdfData.length}`);
 
                     // Case A: Already a URL
                     if (pdfData.startsWith('http://') || pdfData.startsWith('https://')) {
+                        console.log(`   - [PDF #${i}] Detected as URL: ${pdfData}`);
                         s3PdfUrls.push(pdfData);
                         continue;
                     }
@@ -119,21 +126,34 @@ router.post(
                         let base64Content = pdfData;
                         const matches = pdfData.match(/^data:application\/pdf;base64,(.+)$/);
                         if (matches) {
+                            console.log(`   - [PDF #${i}] Detected data URI scheme. Extracting content.`);
                             base64Content = matches[1];
+                        } else {
+                            console.log(`   - [PDF #${i}] No data URI scheme found. Assuming raw Base64.`);
                         }
 
                         const buffer = Buffer.from(base64Content, 'base64');
+                        console.log(`   - [PDF #${i}] Buffer created. Size: ${buffer.length} bytes`);
+
                         const fileName = `event_doc_${req.user?.userId}_${Date.now()}_${i}.pdf`;
 
-                        console.log(`📡 [EVENT] Uploading PDF ${i + 1}/${pdfFiles.length} to S3...`);
+                        console.log(`📡 [EVENT] Uploading PDF ${i + 1}/${pdfFiles.length} to S3... Filename: ${fileName}`);
                         const url = await uploadToS3(buffer, fileName, 'application/pdf', 'documents');
+                        console.log(`✅ [EVENT] PDF Uploaded: ${url}`);
                         s3PdfUrls.push(url);
                     } catch (uploadErr) {
                         console.error(`❌ [EVENT] PDF upload ${i} failed:`, uploadErr);
                         // Do not push fallback garbage if it fails, just skip or maybe push original if short
-                        if (pdfData.length < 200) s3PdfUrls.push(pdfData);
+                        if (pdfData.length < 500) {
+                            console.warn(`   - Keeping original short data as fallback.`);
+                            s3PdfUrls.push(pdfData);
+                        } else {
+                            console.warn(`   - Data too large to keep as fallback. Skipping.`);
+                        }
                     }
                 }
+            } else {
+                console.log('No PDF files found in request.');
             }
 
             // Create event object without embeddings/chunks
@@ -157,6 +177,9 @@ router.post(
             console.log(`💾 [EVENT] Saving unverified event: ${name}. Pipeline will trigger on admin approval.`);
             const event = await eventDoc.save();
 
+            // Invalidate Cache (New event affects lists)
+            await cacheService.invalidateEventLists(); // Invalidate lists
+
             const eventResponse = event.toObject();
             delete eventResponse.pdfFiles; // Privacy/Size
 
@@ -170,6 +193,74 @@ router.post(
                 error: "Internal Server Error",
                 message: error.message || "Failed to create event",
             });
+        }
+    }
+);
+
+/**
+ * POST /not-interested
+ * Mark an event as Not Interested
+ */
+router.post(
+    "/not-interested",
+    authMiddleware,
+    async (req: AuthRequest, res: Response): Promise<void> => {
+        try {
+            console.log('📥 POST /events/not-interested request');
+            const { eventId } = req.body;
+            console.log('   - eventId:', eventId);
+
+            if (!eventId) {
+                res.status(400).json({ error: "Missing eventId" });
+                return;
+            }
+            const userId = req.user!.userId;
+            console.log('   - userId:', userId);
+
+            // Cast IDs to ensure strict ObjectId usage
+            const eventObjectId = new mongoose.Types.ObjectId(eventId);
+            const userObjectId = new mongoose.Types.ObjectId(userId);
+
+            // Optimization: checking if event exists
+            const event = await Event.findById(eventObjectId);
+            if (!event) {
+                console.log('   ❌ Event not found');
+                res.status(404).json({ error: "Event not found" });
+                return;
+            }
+
+            // Verify DB Connection
+            console.log('   🔌 DB Connection:', mongoose.connection.name, 'Host:', mongoose.connection.host);
+
+            const { NotInterested } = await import("../models/NotInterested");
+            console.log('   📂 Using Collection:', NotInterested.collection.name);
+
+            // Check existing
+            let distinctRecord = await NotInterested.findOne({ eventId: eventObjectId, userId: userObjectId });
+
+            if (distinctRecord) {
+                console.log('   ⚠️ Record already exists, updating timestamp.');
+                distinctRecord.createdAt = new Date();
+                await distinctRecord.save();
+            } else {
+                console.log('   🆕 Creating NEW NotInterested record...');
+                const newRecord = new NotInterested({
+                    eventId: eventObjectId,
+                    userId: userObjectId,
+                    eventOwnerId: event.createdBy,
+                    createdAt: new Date()
+                });
+                distinctRecord = await newRecord.save();
+                console.log('   ✅ SAVED to Database Result:', distinctRecord);
+            }
+
+            // Invalidate Cache so listing updates
+            await cacheService.invalidateEventLists();
+
+            res.status(200).json({ message: "Marked as not interested", debug: distinctRecord });
+        } catch (error) {
+            console.error("Error marking not interested:", error);
+            res.status(500).json({ error: "Internal Server Error" });
         }
     }
 );
@@ -193,7 +284,17 @@ router.get(
             const userId = req.user.userId;
             const userRole = req.user.role;
 
+            // 1. Fetch Not Interested list
+            const { NotInterested } = await import("../models/NotInterested");
+            const notInterestedList = await NotInterested.find({ userId }, 'eventId');
+            const excludedIds = notInterestedList.map(ni => ni.eventId);
+
             const filter: any = {};
+
+            // Apply exclusion if NOT fetching 'my' events
+            if (!my && excludedIds.length > 0) {
+                filter._id = { $nin: excludedIds };
+            }
 
             if (all === 'true' && userRole === 'admin') {
                 // Admin sees everything
@@ -223,13 +324,21 @@ router.get(
                         }
                     });
 
-                    // Match stage template: Global/Discovery should EXCLUDE my own events
+                    // Match stage template: Global/Discovery should EXCLUDE my own events AND Not Interested events
+                    const matchQuery: any = {
+                        isVerified: true,
+                        dateTime: { $gte: new Date() },
+                        createdBy: { $ne: new mongoose.Types.ObjectId(userId) } // Exclude self
+                    };
+
+                    if (excludedIds.length > 0) {
+                        matchQuery._id = {
+                            $nin: excludedIds.map(id => new mongoose.Types.ObjectId(id.toString()))
+                        };
+                    }
+
                     const matchStage = {
-                        $match: {
-                            isVerified: true,
-                            dateTime: { $gte: new Date() },
-                            createdBy: { $ne: new mongoose.Types.ObjectId(userId) } // Exclude self
-                        }
+                        $match: matchQuery
                     };
 
                     // Add score projection
@@ -429,6 +538,9 @@ router.put(
                 { new: true }
             );
 
+            // Invalidate Cache
+            await cacheService.invalidateEventLists();
+
             res.status(200).json({
                 message: "Event verified and semantic pipeline processed",
                 data: event,
@@ -459,6 +571,9 @@ router.delete(
 
             const { id } = req.params;
             await Event.findByIdAndDelete(id);
+
+            // Invalidate Cache
+            await cacheService.invalidateEventLists();
 
             res.status(200).json({
                 message: "Event rejected and deleted successfully",
@@ -708,6 +823,7 @@ router.put(
 
             // 1. HANDLE PDF UPLOADS TO S3 (For Updates)
             if (updates.pdfFiles && Array.isArray(updates.pdfFiles)) {
+                console.log(`[UPDATE] Processing ${updates.pdfFiles.length} PDF items...`);
                 const s3PdfUrls: string[] = [];
                 for (let i = 0; i < updates.pdfFiles.length; i++) {
                     const pdfItem = updates.pdfFiles[i];
@@ -720,6 +836,7 @@ router.put(
 
                             console.log(`📡 [EVENT UPDATE] Uploading PDF ${i + 1}/${updates.pdfFiles.length} to S3...`);
                             const url = await uploadToS3(buffer, fileName, 'application/pdf', 'documents', id, 'pdfs');
+                            console.log(`✅ [EVENT UPDATE] PDF Uploaded: ${url}`);
                             s3PdfUrls.push(url);
                         } catch (uploadErr) {
                             console.error(`❌ [EVENT UPDATE] PDF upload ${i} failed:`, uploadErr);
@@ -729,6 +846,7 @@ router.put(
                         }
                     } else {
                         // Existing URL
+                        console.log(`   - [UPDATE] Keeping existing/url PDF: ${pdfItem}`);
                         s3PdfUrls.push(pdfItem);
                     }
                 }
@@ -792,6 +910,9 @@ router.put(
                 runValidators: true,
             });
 
+            // Invalidate Cache
+            await cacheService.invalidateEventLists();
+
             res.status(200).json({
                 message: "Event updated successfully",
                 data: event,
@@ -802,6 +923,149 @@ router.put(
                 error: "Internal Server Error",
                 message: "Failed to update event",
             });
+        }
+    }
+);
+
+
+/**
+ * PUT /:id/toggle-members-public
+ * Toggle members visibility
+ */
+router.put(
+    "/:id/toggle-members-public",
+    authMiddleware,
+    async (req: AuthRequest, res: Response): Promise<void> => {
+        try {
+            if (!req.user) {
+                res.status(401).json({ error: "Unauthorized" });
+                return;
+            }
+            const { id } = req.params;
+
+            const event = await Event.findById(id);
+            if (!event) {
+                res.status(404).json({ error: "Not Found" });
+                return;
+            }
+
+            // Check ownership
+            if (event.createdBy.toString() !== req.user.userId && req.user.role !== 'admin') {
+                res.status(403).json({ error: "Forbidden", message: "Only creator can toggle visibility" });
+                return;
+            }
+
+            // Toggle
+            event.isMembersPublic = !event.isMembersPublic;
+            await event.save();
+
+            console.log(`👁️ Toggled members visibility for event ${id} to ${event.isMembersPublic}`);
+
+            // Invalidate Cache
+            await cacheService.invalidateEventLists();
+
+            res.json({
+                success: true,
+                message: `Members are now ${event.isMembersPublic ? 'Public' : 'Private'}`,
+                isMembersPublic: event.isMembersPublic
+            });
+        } catch (error: any) {
+            console.error("Error toggling members visibility:", error);
+            res.status(500).json({ error: "Internal Server Error" });
+        }
+    }
+);
+
+/**
+ * POST /:id/members/search
+ * Intent Detection: Search members by semantic query (e.g. "Find investors")
+ */
+router.post(
+    "/:id/members/search",
+    authMiddleware,
+    async (req: AuthRequest, res: Response): Promise<void> => {
+        try {
+            const { id } = req.params;
+            const { query } = req.body;
+
+            if (!query || typeof query !== 'string') {
+                res.status(400).json({ error: "Query string is required" });
+                return;
+            }
+
+            console.log(`🔍 Member Search for Event ${id}: "${query}"`);
+
+            // 1. Fetch Event Attendees
+            const event = await Event.findById(id).select('attendees');
+            if (!event) {
+                res.status(404).json({ error: "Event not found" });
+                return;
+            }
+
+            if (!event.attendees || event.attendees.length === 0) {
+                res.status(200).json({ data: [] });
+                return;
+            }
+
+            // 2. Generate Query Embedding
+            const { EmbeddingService } = await import("../services/embeddingService");
+            const queryVector = await EmbeddingService.generateEmbedding(query);
+
+            if (!queryVector || queryVector.length === 0) {
+                res.status(500).json({ error: "Failed to generate embedding" });
+                return;
+            }
+
+            // 3. Fetch Member Profiles
+            const { User } = await import("../models/User");
+            const members = await User.find({
+                _id: { $in: event.attendees },
+                profileEmbedding: { $exists: true, $ne: [] } // Must have embedding
+            }).select('name oneLiner role phoneNumber profileEmbedding');
+
+            // 4. Compute Similarity & Filter
+            const cosineSimilarity = (vecA: number[], vecB: number[]) => {
+                let dotProduct = 0.0;
+                let normA = 0.0;
+                let normB = 0.0;
+                for (let i = 0; i < vecA.length; i++) {
+                    dotProduct += vecA[i] * vecB[i];
+                    normA += vecA[i] * vecA[i];
+                    normB += vecB[i] * vecB[i];
+                }
+                if (normA === 0 || normB === 0) return 0;
+                return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+            };
+
+            const THRESHOLD = 0.35; // Similarity threshold
+
+            const results = members
+                .map(member => {
+                    const score = cosineSimilarity(queryVector, member.profileEmbedding || []);
+                    return {
+                        id: member._id,
+                        name: member.name,
+                        description: member.oneLiner || member.role || "Member",
+                        mobile: member.phoneNumber || null, // Only if present
+                        similarity: score
+                    };
+                })
+                .filter(item => item.similarity >= THRESHOLD)
+                .sort((a, b) => {
+                    // Sort by Alphabetical Name as requested
+                    return a.name.localeCompare(b.name);
+                });
+
+            console.log(`✅ Found ${results.length} matched members.`);
+
+            res.status(200).json({
+                message: "Search results",
+                data: results
+            });
+
+        } catch (error) {
+            console.error("Error searching members:", error);
+            res.status(500).json({ error: "Internal Server Error" });
         }
     }
 );
@@ -844,6 +1108,9 @@ router.delete(
             }
 
             await Event.findByIdAndDelete(id);
+
+            // Invalidate Cache
+            await cacheService.invalidateEventLists();
 
             res.status(200).json({
                 message: "Event deleted successfully",
@@ -914,8 +1181,10 @@ router.post(
                 }
             } catch (notifyError) {
                 console.error("Failed to create notification:", notifyError);
-                // Don't fail the join request just because notification failed
             }
+
+            // Invalidate Cache
+            await cacheService.invalidateEventLists();
 
             res.status(200).json({
                 message: "Joined event successfully",

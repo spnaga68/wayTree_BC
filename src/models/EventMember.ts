@@ -9,6 +9,8 @@ export interface IEventMember extends Document {
     phoneNumber?: string;
     source: 'join' | 'manual' | 'excel';
     joinedAt: Date;
+    isJoined?: boolean;
+    isEvent?: boolean;
 }
 
 const EventMemberSchema: Schema = new Schema({
@@ -23,6 +25,8 @@ const EventMemberSchema: Schema = new Schema({
         default: 'join'
     },
     joinedAt: { type: Date, default: Date.now },
+    isJoined: { type: Boolean, default: true },
+    isEvent: { type: Boolean, default: true },
 });
 
 // Indexes for faster lookups

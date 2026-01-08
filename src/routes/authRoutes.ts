@@ -14,6 +14,8 @@ import {
 } from "../services/tokenService";
 import { User } from "../models/User";
 
+import cacheService from "../services/cacheService";
+
 const router = Router();
 
 /**
@@ -301,7 +303,15 @@ router.post(
         return;
       }
 
-      const { deleteRefreshToken } = await import("../services/tokenService");
+      // Get User ID to clear cache
+      const { verifyRefreshToken, deleteRefreshToken } = await import("../services/tokenService");
+      // Use peek=true (default/implicit) or just verify. verifyRefreshToken doesn't consume OTP logic.
+      const userData = await verifyRefreshToken(refreshToken);
+
+      if (userData) {
+        await cacheService.clearUser(userData.userId);
+      }
+
       await deleteRefreshToken(refreshToken);
 
       res.status(200).json({
@@ -347,6 +357,7 @@ router.post(
         return;
       }
 
+      await cacheService.clearUser(userData.userId);
       await deleteAllUserRefreshTokens(userData.userId);
 
       res.status(200).json({

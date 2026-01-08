@@ -1,12 +1,10 @@
 /**
  * Caching Middleware for Express Routes
- * Automatically caches GET request responses
+ * Automatically caches GET request responses using Redis (if available) or Memory
  */
 
 import { Request, Response, NextFunction } from 'express';
-const cacheServiceModule = require('../services/cacheService');
-const cacheService = cacheServiceModule.default || cacheServiceModule;
-const { CacheTTL } = cacheServiceModule;
+import cacheService, { CacheTTL } from '../services/cacheService';
 
 /**
  * Cache middleware factory
@@ -15,64 +13,78 @@ const { CacheTTL } = cacheServiceModule;
  */
 export const cacheMiddleware = (ttl: number = CacheTTL.MEDIUM, keyGenerator: ((req: Request) => string) | null = null) => {
     return (req: Request, res: Response, next: NextFunction) => {
-        // Only cache GET requests
-        if (req.method !== 'GET') {
-            return next();
-        }
+        // Express 4 Async Wrapper
+        (async () => {
+            // Only cache GET requests
+            if (req.method !== 'GET') {
+                return next();
+            }
 
-        // Generate cache key
-        const cacheKey = keyGenerator
-            ? keyGenerator(req)
-            : `route:${req.originalUrl}:${(req as any).user?.id || 'anonymous'}`;
+            // Check for bypass (nocache)
+            const bypassCache = req.query.nocache === 'true' || req.headers['x-force-refresh'] === 'true';
 
-        // Try to get from cache
-        const cachedResponse = cacheService.get(cacheKey);
+            // Generate cache key (remove nocache param to share key with normal requests)
+            let urlForKey = req.originalUrl.replace(/[?&]nocache=true/, '');
+            if (urlForKey.endsWith('?') || urlForKey.endsWith('&')) {
+                urlForKey = urlForKey.slice(0, -1);
+            }
 
-        if (cachedResponse) {
-            console.log(`⚡ [CACHE] Serving cached response for: ${req.originalUrl}`);
-            return res.json(cachedResponse);
-        }
+            const cacheKey = keyGenerator
+                ? keyGenerator(req)
+                : `route:${urlForKey}:${(req as any).user?.id || 'anonymous'}`;
 
-        // Store original res.json
-        const originalJson = res.json.bind(res);
+            // Try to get from cache (unless bypassed)
+            let cachedResponse: any = null;
+            if (!bypassCache) {
+                cachedResponse = await cacheService.get(cacheKey);
+            }
 
-        // Override res.json to cache the response
-        res.json = (body: any) => {
-            // Cache the response
-            cacheService.set(cacheKey, body, ttl);
-            console.log(`💾 [CACHE] Cached response for: ${req.originalUrl}`);
+            if (bypassCache) {
+                console.log(`🔃 [CACHE] Bypassing (Force Refresh) for: ${urlForKey}`);
+            } else if (cachedResponse) {
+                console.log(`⚡ [CACHE] Serving cached response for: ${urlForKey}`);
+                return res.json(cachedResponse);
+            }
 
-            // Send the response
-            return originalJson(body);
-        };
+            // Store original res.json
+            const originalJson = res.json.bind(res);
 
-        next();
+            // Override res.json to cache the response
+            res.json = (body: any) => {
+                // Cache the response (Async fire & forget)
+                cacheService.set(cacheKey, body, ttl).catch(err => {
+                    console.error('❌ [CACHE] Set Error:', err);
+                });
+
+                if (bypassCache) {
+                    console.log(`💾 [CACHE] Refreshed cache for: ${urlForKey}`);
+                }
+
+                // Send the response
+                return originalJson(body);
+            };
+
+            next();
+        })().catch(next);
     };
 };
 
 /**
- * Clear cache for specific patterns
+ * Clear cache for specific patterns (Middleware)
  */
 export const clearCache = (pattern?: string) => {
     return (req: Request, _res: Response, next: NextFunction) => {
-        const patternToUse = pattern || `route:${req.baseUrl}`;
-        cacheService.clearPattern(patternToUse);
-        next();
+        (async () => {
+            const patternToUse = pattern || `route:${req.baseUrl}`;
+            await cacheService.clearPattern(patternToUse);
+            next();
+        })().catch(next);
     };
 };
 
 /**
- * Cache invalidation middleware for mutations
- * Automatically clears cache on POST/PUT/DELETE
+ * Alias for clearCache
  */
-export const invalidateCache = (pattern?: string) => {
-    return (req: Request, _res: Response, next: NextFunction) => {
-        // Only invalidate on mutations
-        if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
-            const patternToUse = pattern || `route:${req.baseUrl}`;
-            cacheService.clearPattern(patternToUse);
-            console.log(`🗑️ [CACHE] Invalidated cache for pattern: ${patternToUse}`);
-        }
-        next();
-    };
-};
+export const invalidateCache = clearCache;
+
+export { CacheTTL };

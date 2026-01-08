@@ -51,10 +51,22 @@ router.post("/", authMiddleware, async (req: Request, res: Response) => {
 
     // Validation - title and type are always required
     if (!title || !type) {
+      console.warn(`⚠️ [DOC UPLOAD] Missing title or type. Body keys: ${Object.keys(req.body)}`);
       return res.status(400).json({
         error: "Missing required fields",
         message: "title and type are required",
       });
+    }
+
+    if (url) {
+      console.log(`📄 [DOC UPLOAD] Type: ${type}, Title: ${title}, URL length: ${url.length} chars`);
+      if (url.startsWith('data:')) {
+        console.log(`   - Data URI detected. Type: ${url.split(';')[0]}`);
+      } else {
+        console.log(`   - standard URL: ${url}`);
+      }
+    } else {
+      console.log(`📄 [DOC UPLOAD] Type: ${type}, Title: ${title}, No URL provided (placeholder will be used)`);
     }
 
     const validTypes = [

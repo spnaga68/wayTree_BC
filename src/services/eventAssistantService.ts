@@ -32,16 +32,19 @@ export const EventAssistantService = {
             console.log(`🤖 EventAssistant: Processing "${question}"`);
 
             // 1️⃣ CLASSIFY INTENT
-            // 1️⃣ CLASSIFY INTENT (Rule-Based, No LLM)
+            // 1️⃣ CLASSIFY INTENT (Rule-Based + Keyword Expansion)
             const lowerQ = question.toLowerCase();
             let intent = "GENERAL";
 
             const metadataKeywords = ["where", "when", "venue", "location", "date", "time", "duration", "deadline"];
             const contentKeywords = ["learn", "agenda", "session", "topic", "speaker", "workshop", "outcome", "schedule", "what will i", "track"];
             const personalKeywords = ["for me", "useful", "benefit", "my profile", "should i", "relevant", "worth", "fit"];
+            const memberKeywords = ["investor", "investors", "mentor", "mentors", "funding", "who is coming", "who is attending", "participants", "attendees", "meet", "connect", "find someone", "looking for", "networking"];
 
             if (metadataKeywords.some(k => lowerQ.includes(k))) {
                 intent = "METADATA";
+            } else if (memberKeywords.some(k => lowerQ.includes(k))) {
+                intent = "MEMBER_DISCOVERY";
             } else if (contentKeywords.some(k => lowerQ.includes(k))) {
                 intent = "CONTENT";
             } else if (personalKeywords.some(k => lowerQ.includes(k))) {
@@ -51,6 +54,71 @@ export const EventAssistantService = {
             console.log(`🔍 Intent Classified (Deterministic): ${intent}`);
 
             // 2️⃣ EXECUTE FLOW BASED ON INTENT
+
+            // FLOW: MEMBER DISCOVERY
+            if (intent === "MEMBER_DISCOVERY") {
+                console.log("👥 Executing Member Discovery Flow");
+                if (!event.attendees || event.attendees.length === 0) {
+                    return {
+                        answer: "I couldn't find any other members attending this event yet.",
+                        relevantInfo: [],
+                        confidence: 90
+                    };
+                }
+
+                // 1. Generate Query Embedding
+                const { EmbeddingService } = await import("./embeddingService");
+                const queryVector = await EmbeddingService.generateEmbedding(question);
+
+                // 2. Fetch Members
+                const { User } = await import("../models/User");
+                const members = await User.find({
+                    _id: { $in: event.attendees },
+                    profileEmbedding: { $exists: true, $ne: [] }
+                }).select('name oneLiner role phoneNumber profileEmbedding company');
+
+                // 3. Similarity Search
+                const cosineSimilarity = (vecA: number[], vecB: number[]) => {
+                    let dot = 0.0, normA = 0.0, normB = 0.0;
+                    for (let i = 0; i < vecA.length; i++) {
+                        dot += vecA[i] * vecB[i];
+                        normA += vecA[i] * vecA[i];
+                        normB += vecB[i] * vecB[i];
+                    }
+                    return (normA === 0 || normB === 0) ? 0 : dot / (Math.sqrt(normA) * Math.sqrt(normB));
+                };
+
+                const results = members
+                    .map(m => ({
+                        m,
+                        score: cosineSimilarity(queryVector, m.profileEmbedding || [])
+                    }))
+                    .filter(item => item.score >= 0.35) // Filter Threshold
+                    .sort((a, b) => a.m.name.localeCompare(b.m.name)); // Sort Alphabetical
+
+                if (results.length === 0) {
+                    return {
+                        answer: "I checked the attendee list, but I couldn't find anyone specifically matching that criteria.",
+                        relevantInfo: [],
+                        confidence: 85
+                    };
+                }
+
+                // 4. Construct Response
+                const responseLines = results.map(item => {
+                    const m = item.m;
+                    const desc = m.oneLiner || m.role || (m.company ? `Works at ${m.company}` : "Event Attendee");
+                    const contact = m.phoneNumber ? `\n📞 ${m.phoneNumber}` : "";
+                    return `• **${m.name}**\n  ${desc}${contact}`;
+                });
+
+                return {
+                    answer: `Here are some members you might want to connect with:\n\n${responseLines.join("\n\n")}`,
+                    relevantInfo: [`Found ${results.length} matches based on profile similarity.`],
+                    confidence: 95
+                };
+            }
+
             if (intent === "METADATA") {
                 // FLOW 1: METADATA (Structured Data Only)
                 console.log("⚡ Executing Metadata Flow");

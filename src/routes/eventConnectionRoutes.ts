@@ -1,6 +1,7 @@
 
 import express from 'express';
 import multer from 'multer';
+import { invalidateCache } from "../middleware/cacheMiddleware";
 import {
   toggleEventParticipation,
   checkEventParticipation,
@@ -11,6 +12,11 @@ import {
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
+
+
+
+// Invalidate event cache on connection changes
+router.use(invalidateCache('route:/api/events'));
 
 // Toggle event participation (join/leave)
 router.post('/toggle-participation', toggleEventParticipation);

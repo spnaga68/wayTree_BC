@@ -1,132 +1,133 @@
-/**
- * Cache Service for WayTree App Backend
- * Provides in-memory caching with TTL support
- */
+import { createClient, RedisClientType } from 'redis';
 
 class CacheService {
-    private cache: Map<string, any>;
-    private expiryTimes: Map<string, number>;
-    private defaultTTL: number;
+    private client: RedisClientType | undefined;
+    private isRedisConnected: boolean = false;
+    private memoryCache: Map<string, { value: any, expiry: number }> = new Map();
+    private defaultTTL: number = 300 * 1000; // 5 min default (ms)
 
     constructor() {
-        this.cache = new Map();
-        this.expiryTimes = new Map();
-        this.defaultTTL = 5 * 60 * 1000; // 5 minutes
+        if (process.env.REDIS_URL || process.env.NODE_ENV !== 'test') {
+            const url = process.env.REDIS_URL || 'redis://localhost:6379';
+            // Create client (v4)
+            this.client = createClient({ url });
+
+            this.client.on('error', (err) => {
+                // Suppress connection refused logs if not running
+                if (err.code !== 'ECONNREFUSED') {
+                    console.error('❌ Redis Client Error:', err.message);
+                }
+                this.isRedisConnected = false;
+            });
+
+            this.client.on('connect', () => {
+                console.log('✅ Redis Connected');
+                this.isRedisConnected = true;
+            });
+
+            this.client.connect().catch(err => {
+                console.warn('⚠️ Redis Connection Failed, falling back to Memory Cache');
+                this.isRedisConnected = false;
+            });
+        }
     }
 
-    /**
-     * Generate cache key
-     */
-    generateKey(prefix: string, identifier: string): string {
-        return `${prefix}:${identifier}`;
+    // Wrap redis connection check
+    private get useRedis() {
+        return this.isRedisConnected && this.client && this.client.isOpen;
     }
 
-    /**
-     * Set value in cache
-     */
-    set(key: string, value: any, ttl: number = this.defaultTTL): boolean {
-        this.cache.set(key, value);
-        this.expiryTimes.set(key, Date.now() + ttl);
-        console.log(`💾 [CACHE] Stored: ${key} (TTL: ${ttl}ms)`);
-        return true;
-    }
+    async get(key: string): Promise<any> {
+        if (this.useRedis) {
+            try {
+                const val = await this.client!.get(key);
+                return val ? JSON.parse(val) : null;
+            } catch (e) {
+                console.error('Redis Get Error:', e);
+            }
+        }
 
-    /**
-     * Get value from cache
-     */
-    get(key: string): any {
-        const expiry = this.expiryTimes.get(key);
-
-        if (!expiry || Date.now() > expiry) {
-            this.delete(key);
-            console.log(`❌ [CACHE] Miss: ${key}`);
+        // Memory fallback
+        const item = this.memoryCache.get(key);
+        if (!item) return null;
+        if (Date.now() > item.expiry) {
+            this.memoryCache.delete(key);
             return null;
         }
-
-        console.log(`✅ [CACHE] Hit: ${key}`);
-        return this.cache.get(key);
+        return item.value;
     }
 
-    /**
-     * Delete cache entry
-     */
-    delete(key: string): boolean {
-        this.cache.delete(key);
-        this.expiryTimes.delete(key);
-        return true;
+    async set(key: string, value: any, ttlMs: number = this.defaultTTL): Promise<void> {
+        if (this.useRedis) {
+            try {
+                // Redis uses seconds for EX, or PX for milliseconds
+                await this.client!.set(key, JSON.stringify(value), { PX: ttlMs });
+                return;
+            } catch (e) {
+                console.error('Redis Set Error:', e);
+            }
+        }
+
+        // Memory fallback
+        this.memoryCache.set(key, {
+            value,
+            expiry: Date.now() + ttlMs
+        });
     }
 
-    /**
-     * Clear all cache
-     */
-    clear(): boolean {
-        this.cache.clear();
-        this.expiryTimes.clear();
-        console.log('🗑️ [CACHE] Cleared all entries');
-        return true;
+    async delete(key: string): Promise<void> {
+        if (this.useRedis) {
+            try {
+                await this.client!.del(key);
+                return;
+            } catch (e) { console.error(e); }
+        }
+        this.memoryCache.delete(key);
     }
 
-    /**
-     * Clear cache by pattern
-     */
-    clearPattern(pattern: string): number {
+    async clearPattern(pattern: string): Promise<void> {
+        // Pattern logic: Redis uses glob usually. Input might be Regex or Glob.
+        // We'll normalize to Glob for Redis: replace .* with *
+        const globPattern = pattern.replace(/\.\*/g, '*');
+
+        if (this.useRedis) {
+            try {
+                let cursor = 0;
+                do {
+                    // Use scanIterator for cleaner loop if available, but manual loop works
+                    const reply = await this.client!.scan(cursor, { MATCH: globPattern, COUNT: 100 });
+                    cursor = reply.cursor;
+                    const keys = reply.keys;
+                    if (keys.length > 0) {
+                        await this.client!.del(keys);
+                    }
+                } while (cursor !== 0);
+            } catch (e) { console.error('Redis Scan Error:', e); }
+        }
+
+        // Always clear memory cache too (hybrid safety)
         const regex = new RegExp(pattern);
-        let cleared = 0;
-
-        for (const key of this.cache.keys()) {
+        for (const key of this.memoryCache.keys()) {
             if (regex.test(key)) {
-                this.delete(key);
-                cleared++;
+                this.memoryCache.delete(key);
             }
         }
-
-        console.log(`🗑️ [CACHE] Cleared ${cleared} entries matching: ${pattern}`);
-        return cleared;
+        console.log(`🗑️ [CACHE] Cleared pattern: ${pattern}`);
     }
 
-    /**
-     * Get cache statistics
-     */
-    getStats(): { size: number; keys: string[] } {
-        return {
-            size: this.cache.size,
-            keys: Array.from(this.cache.keys())
-        };
+    async clearUser(userId: string): Promise<void> {
+        // Clear all keys ending with userId 
+        // Middleware key: `route:URL:UserId`
+        await this.clearPattern(`*:${userId}`);
     }
 
-    /**
-     * Clean expired entries (run periodically)
-     */
-    cleanExpired(): number {
-        const now = Date.now();
-        let cleaned = 0;
-
-        for (const [key, expiry] of this.expiryTimes.entries()) {
-            if (now > expiry) {
-                this.delete(key);
-                cleaned++;
-            }
-        }
-
-        if (cleaned > 0) {
-            console.log(`🧹 [CACHE] Cleaned ${cleaned} expired entries`);
-        }
-
-        return cleaned;
+    // Invalidate All Events (Approvals, Updates)
+    async invalidateEventLists(): Promise<void> {
+        // Invalidate route:/events* (Global lists, pending, upcoming)
+        await this.clearPattern('route:/events*');
     }
 }
 
-// Create singleton instance
-const cacheService = new CacheService();
-
-// Clean expired entries every 10 minutes
-setInterval(() => {
-    cacheService.cleanExpired();
-}, 10 * 60 * 1000);
-
-export default cacheService;
-
-// Cache TTL presets
 export const CacheTTL = {
     SHORT: 1 * 60 * 1000,      // 1 minute
     MEDIUM: 5 * 60 * 1000,     // 5 minutes
@@ -134,3 +135,5 @@ export const CacheTTL = {
     VERY_LONG: 60 * 60 * 1000, // 1 hour
     STATIC: 24 * 60 * 60 * 1000 // 24 hours
 };
+
+export default new CacheService();
