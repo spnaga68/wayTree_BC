@@ -390,13 +390,19 @@ router.get(
                                 : false
                         }));
 
-                    res.status(200).json({
-                        message: "Events retrieved successfully (Smart Recommendations)",
-                        data: processedEvents,
-                    });
-                    return;
+                    if (processedEvents.length > 0) {
+                        res.status(200).json({
+                            message: "Events retrieved successfully (Smart Recommendations)",
+                            data: processedEvents,
+                        });
+                        return; // ONLY return if we actually have results
+                    }
+
+                    console.log("⚠️ Smart Search returned 0 results. Falling back to standard list.");
+                    // Fall through to standard logic below
                 } catch (vectorError) {
                     console.error("⚠️ Dual vector search failed. Falling back.", vectorError);
+                    // Fall through
                 }
             }
 
