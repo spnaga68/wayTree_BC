@@ -31,7 +31,7 @@ export const cacheMiddleware = (ttl: number = CacheTTL.MEDIUM, keyGenerator: ((r
 
             const cacheKey = keyGenerator
                 ? keyGenerator(req)
-                : `route:${urlForKey}:${(req as any).user?.id || 'anonymous'}`;
+                : `route:${urlForKey}:${(req as any).user?.userId || (req as any).user?.id || 'anonymous'}`;
 
             // Try to get from cache (unless bypassed)
             let cachedResponse: any = null;
