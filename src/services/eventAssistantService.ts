@@ -39,7 +39,13 @@ export const EventAssistantService = {
             const metadataKeywords = ["where", "when", "venue", "location", "date", "time", "duration", "deadline"];
             const contentKeywords = ["learn", "agenda", "session", "topic", "speaker", "workshop", "outcome", "schedule", "what will i", "track"];
             const personalKeywords = ["for me", "useful", "benefit", "my profile", "should i", "relevant", "worth", "fit"];
-            const memberKeywords = ["investor", "investors", "mentor", "mentors", "funding", "who is coming", "who is attending", "participants", "attendees", "meet", "connect", "find someone", "looking for", "networking"];
+            const memberKeywords = [
+                "investor", "investors", "mentor", "mentors", "funding",
+                "who is coming", "who is attending", "participants", "attendees",
+                "meet", "connect", "find someone", "looking for", "networking",
+                "anyone", "any members", "any people", "is there", "are there", "does any",
+                "who else", "search for", "find"
+            ];
 
             if (metadataKeywords.some(k => lowerQ.includes(k))) {
                 intent = "METADATA";
