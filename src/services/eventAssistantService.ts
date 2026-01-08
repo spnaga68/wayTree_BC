@@ -211,7 +211,7 @@ export const EventAssistantService = {
             }
 
             let finalAnswer = "I couldn't generate an answer.";
-            const models = ["gemini-1.5-flash", "gemini-pro"];
+            const models = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-pro"];
             const finalPrompt = `${systemPrompt}\n\n${userContent}`;
 
             for (const modelName of models) {
