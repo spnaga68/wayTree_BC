@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import { Router, Response } from "express";
 import cacheService from "../services/cacheService"; // Import CacheService
 import mongoose from "mongoose";
 import { authMiddleware } from "../middleware/authMiddleware";

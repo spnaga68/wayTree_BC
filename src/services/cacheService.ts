@@ -25,7 +25,7 @@ class CacheService {
                 this.isRedisConnected = true;
             });
 
-            this.client.connect().catch(err => {
+            this.client.connect().catch(() => {
                 console.warn('⚠️ Redis Connection Failed, falling back to Memory Cache');
                 this.isRedisConnected = false;
             });
@@ -92,16 +92,15 @@ class CacheService {
 
         if (this.useRedis) {
             try {
-                let cursor = 0;
-                do {
-                    // Use scanIterator for cleaner loop if available, but manual loop works
-                    const reply = await this.client!.scan(cursor, { MATCH: globPattern, COUNT: 100 });
-                    cursor = reply.cursor;
-                    const keys = reply.keys;
-                    if (keys.length > 0) {
-                        await this.client!.del(keys);
-                    }
-                } while (cursor !== 0);
+                // Use scanIterator for Type-Safe Iteration (Fixes TS cursor errors)
+                const iterator = this.client!.scanIterator({
+                    MATCH: globPattern,
+                    COUNT: 100
+                });
+
+                for await (const key of iterator) {
+                    await this.client!.del(key);
+                }
             } catch (e) { console.error('Redis Scan Error:', e); }
         }
 
