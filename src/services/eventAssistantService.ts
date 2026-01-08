@@ -84,6 +84,7 @@ export const EventAssistantService = {
                 }).select('name oneLiner role phoneNumber profileEmbedding company');
 
                 // 3. Similarity Search
+                // 3. Similarity Search (Sorted by Score Descending)
                 const cosineSimilarity = (vecA: number[], vecB: number[]) => {
                     let dot = 0.0, normA = 0.0, normB = 0.0;
                     for (let i = 0; i < vecA.length; i++) {
@@ -94,15 +95,34 @@ export const EventAssistantService = {
                     return (normA === 0 || normB === 0) ? 0 : dot / (Math.sqrt(normA) * Math.sqrt(normB));
                 };
 
-                const results = members
-                    .map(m => ({
-                        m,
-                        score: cosineSimilarity(queryVector, m.profileEmbedding || [])
-                    }))
-                    .filter(item => item.score >= 0.35) // Filter Threshold
-                    .sort((a, b) => a.m.name.localeCompare(b.m.name)); // Sort Alphabetical
+                console.log(`🔍 [DEBUG] Member Discovery: Comparing "${question}" against ${members.length} attendees.`);
 
-                if (results.length === 0) {
+                const results = members
+                    .map(m => {
+                        const score = cosineSimilarity(queryVector, m.profileEmbedding || []);
+                        return { m, score };
+                    })
+                    .sort((a, b) => b.score - a.score); // DESCENDING sort by score (Highest first)
+
+                // Debug scores
+                results.forEach(r => console.log(`   - ${r.m.name}: ${r.score.toFixed(4)}`));
+
+                // Filter Strategy:
+                // 1. Strict Threshold: Only take matches > 0.45 (increased from 0.35 for stricter relevance)
+                // 2. Fallback: If no strict matches, take top 2 IF valid score (>0.2)
+
+                let filtered = results.filter(item => item.score >= 0.45);
+
+                if (filtered.length === 0) {
+                    // Fallback to top 2 best matches if they are at least decent
+                    filtered = results.filter(item => item.score >= 0.25).slice(0, 2);
+                } else {
+                    // Limit to top 5 strictly relevant
+                    filtered = filtered.slice(0, 5);
+                }
+
+                if (filtered.length === 0) {
+                    console.log("⚠️ No members met the similarity threshold.");
                     return {
                         answer: "I checked the attendee list, but I couldn't find anyone specifically matching that criteria.",
                         relevantInfo: [],
@@ -111,11 +131,12 @@ export const EventAssistantService = {
                 }
 
                 // 4. Construct Response
-                const responseLines = results.map(item => {
+                const responseLines = filtered.map(item => {
                     const m = item.m;
+                    // Format: **Name** (Role/Company) - Score debug
                     const desc = m.oneLiner || m.role || (m.company ? `Works at ${m.company}` : "Event Attendee");
-                    const contact = m.phoneNumber ? `\n📞 ${m.phoneNumber}` : "";
-                    return `• **${m.name}**\n  ${desc}${contact}`;
+                    // removed contact number for privacy in general chat usually, but keeping if requested
+                    return `• **${m.name}**\n  ${desc}`;
                 });
 
                 return {
