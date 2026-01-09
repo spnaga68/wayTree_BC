@@ -88,10 +88,29 @@ function cosineSimilarity(a: number[], b: number[]) {
 
 function ruleBasedIntent(question: string): Intent | null {
     const q = question.toLowerCase().trim();
-    if (/(where|when|date|time|venue|location|address|start|end|map|place)/.test(q)) return "METADATA";
-    if (/(investor|funding|mentor|attend|participants|members|people|connect|who|meet|coming|else)/.test(q)) return "MEMBER_DISCOVERY";
-    if (/(for me|useful|should i|relevant|profile|worth|benefit|my role|career)/.test(q)) return "PERSONAL";
-    if (/(learn|agenda|topics|speakers|workshop|schedule|track|session|curriculum)/.test(q)) return "CONTENT";
+
+    // 1. CONTENT (High Priority - Speakers, Agenda)
+    if (/\b(learn|agenda|topics?|speakers?|workshops?|schedule|track|sessions?|curriculum|takeaways?|what\s+will\s+i)\b/.test(q)) {
+        return "CONTENT";
+    }
+
+    // 2. MEMBER_DISCOVERY (Priority > Metadata)
+    // Explicitly matches 'how many', 'who is attending', 'list', etc.
+    if (/\b(who|investors?|founders?|fund(ing|ers)|mentors?|attends?|attending|attendees?|participants?|members?|people|connect|meet|coming|else|list|how\s+many)\b/.test(q)) {
+        return "MEMBER_DISCOVERY";
+    }
+
+    // 3. METADATA (Location, Time)
+    // Uses \b to prevent partial matches (e.g. 'end' matching inside 'attending')
+    if (/\b(where|when|date|time|venue|location|address|starts?|ends?|map|place|duration|deadline)\b/.test(q)) {
+        return "METADATA";
+    }
+
+    // 4. PERSONAL
+    if (/\b(for\s+me|useful|should\s+i|relevant|profile|worth|benefit|my\s+role|career)\b/.test(q)) {
+        return "PERSONAL";
+    }
+
     return null;
 }
 
@@ -187,6 +206,17 @@ export const EventAssistantService = {
             // 2. EXECUTE FLOW
             if (intent === "MEMBER_DISCOVERY") {
                 console.log("👥 Executing Member Discovery Flow");
+                const totalCount = event.attendees ? event.attendees.length : 0;
+
+                // Handle "How many" / "Count" explicitly
+                if (/\b(how\s+many|count|total|number\s+of)\b/i.test(question)) {
+                    return {
+                        answer: `There are currently ${totalCount} members attending this event.`,
+                        relevantInfo: [`Total attendees: ${totalCount}`],
+                        confidence: 100
+                    };
+                }
+
                 if (!event.attendees || event.attendees.length === 0) {
                     return { answer: "I couldn't find any other members attending this event yet.", relevantInfo: [], confidence: 90 };
                 }
