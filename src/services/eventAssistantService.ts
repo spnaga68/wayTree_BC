@@ -208,7 +208,7 @@ export const EventAssistantService = {
                 console.log("👥 Executing Member Discovery Flow");
                 const totalCount = event.attendees ? event.attendees.length : 0;
 
-                // Handle "How many" / "Count" explicitly
+                // Handle "How many" / "Count" explicitly (Still rely on Mongo for absolute count)
                 if (/\b(how\s+many|count|total|number\s+of)\b/i.test(question)) {
                     return {
                         answer: `There are currently ${totalCount} members attending this event.`,
@@ -217,42 +217,31 @@ export const EventAssistantService = {
                     };
                 }
 
-                if (!event.attendees || event.attendees.length === 0) {
-                    return { answer: "I couldn't find any other members attending this event yet.", relevantInfo: [], confidence: 90 };
-                }
-
                 // Generate embedding for query
                 const queryVector = await EmbeddingService.generateEmbedding(question);
 
-                // Fetch members
-                const { User } = await import("../models/User");
-                const members = await User.find({
-                    _id: { $in: event.attendees },
-                    profileEmbedding: { $exists: true, $ne: [] }
-                }).select('name oneLiner role phoneNumber profileEmbedding company');
+                // Fetch Semantic Matches from Supabase (Members)
+                const { SupabaseService } = await import("./supabaseService");
+                const results = await SupabaseService.searchEventEmbeddings(
+                    queryVector,
+                    event._id.toString(),
+                    'member',
+                    10, // Fetch top 10 potential matches
+                    0.25 // Base threshold
+                );
 
-                // Similarity Search (Sorted by Score Descending)
-                console.log(`🔍 [DEBUG] Member Discovery: Comparing "${question}" against ${members.length} attendees.`);
+                console.log(`🔍 [DEBUG] Member Discovery: Found ${results.length} semantic matches.`);
 
-                const results = members
-                    .map(m => {
-                        const score = cosineSimilarity(queryVector, m.profileEmbedding || []);
-                        return { m, score };
-                    })
-                    .sort((a, b) => b.score - a.score); // DESCENDING sort
+                let filtered = results;
 
-                // Debug scores
-                results.forEach(r => console.log(`   - ${r.m.name}: ${r.score.toFixed(4)}`));
+                // Strict Threshold Filtering Logic (similar to previous but applied to retrieval results)
+                const highConfidence = results.filter((r: any) => r.similarity >= 0.45);
 
-                // Strict Threshold Filtering (0.45 threshold, Top 5)
-                // If the question is just looking for "investors", the semantic match should be high for investors.
-                let filtered = results.filter(item => item.score >= 0.45);
-
-                if (filtered.length === 0) {
-                    // Fallback: Top 2 if > 0.25 (User asked for safer logic, this ensures we don't return junk but also don't fail silently)
-                    filtered = results.filter(item => item.score >= 0.25).slice(0, 2);
+                if (highConfidence.length > 0) {
+                    filtered = highConfidence.slice(0, 5); // Top 5 relevant
                 } else {
-                    filtered = filtered.slice(0, 5);
+                    // Fallback: Top 2 if > 0.25
+                    filtered = results.filter((r: any) => r.similarity >= 0.25).slice(0, 2);
                 }
 
                 if (filtered.length === 0) {
@@ -263,10 +252,11 @@ export const EventAssistantService = {
                     };
                 }
 
-                const responseLines = filtered.map(item => {
-                    const m = item.m;
-                    const desc = m.oneLiner || m.role || (m.company ? `Works at ${m.company}` : "Event Attendee");
-                    return `• **${m.name}**\n  ${desc}`;
+                const responseLines = filtered.map((item: any) => {
+                    const meta = item.extra_metadata || {};
+                    const name = meta.name || "Member";
+                    const desc = meta.oneLiner || meta.role || (meta.company ? `Works at ${meta.company}` : "Event Attendee");
+                    return `• **${name}**\n  ${desc}`;
                 });
 
                 return {
@@ -288,20 +278,33 @@ export const EventAssistantService = {
             let contextChunks = "";
             let relevantInfo: string[] = [];
 
-            // RAG logic for Content/Personal/General
-            if (event.pdfChunks && event.pdfChunks.length > 0) {
-                try {
-                    const queryEmbedding = await EmbeddingService.generateEmbedding(question);
-                    const scoredChunks = event.pdfChunks.map((chunk: any) => ({
-                        text: chunk.text,
-                        score: cosineSimilarity(queryEmbedding, chunk.embedding)
-                    })).sort((a: any, b: any) => b.score - a.score).slice(0, 5);
+            // RAG logic: Fetch Docs from Supabase
+            try {
+                const queryEmbedding = await EmbeddingService.generateEmbedding(question);
+                const { SupabaseService } = await import("./supabaseService");
 
-                    contextChunks = scoredChunks.map((c: any) => `- ${c.text}`).join("\n\n");
-                    if (scoredChunks.length > 0) relevantInfo.push("Retrieved PDF context");
-                } catch (e) {
-                    console.error("RAG retrieval failed:", e);
+                const docResults = await SupabaseService.searchEventEmbeddings(
+                    queryEmbedding,
+                    event._id.toString(),
+                    'doc',
+                    5, // Top 5 chunks
+                    0.4 // Moderate threshold
+                );
+
+                if (docResults.length > 0) {
+                    contextChunks = docResults.map((c: any) => `- ${c.content}`).join("\n\n");
+                    relevantInfo.push(`Retrieved ${docResults.length} relevant context chunks.`);
+                    console.log(`📄 Retrieved ${docResults.length} chunks from Supabase.`);
+                } else {
+                    // Fallback: Try Metadata embedding if no docs found
+                    const metaResults = await SupabaseService.searchEventEmbeddings(queryEmbedding, event._id.toString(), 'meta', 1, 0.4);
+                    if (metaResults.length > 0) {
+                        contextChunks = metaResults[0].content;
+                        relevantInfo.push("Used Event Metadata summary.");
+                    }
                 }
+            } catch (e) {
+                console.error("RAG retrieval failed:", e);
             }
 
             // GENERATE ANSWER
