@@ -1,16 +1,143 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
+import { EmbeddingService } from "./embeddingService";
 
 dotenv.config();
 
 const apiKey = process.env.GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
-export interface ChatMessage {
-    role: 'user' | 'assistant';
-    content: string;
-    timestamp: Date;
+export type Intent = "METADATA" | "CONTENT" | "PERSONAL" | "MEMBER_DISCOVERY" | "GENERAL";
+
+/* =========================================================
+   INTENT CLASSIFICATION LOGIC
+========================================================= */
+
+const INTENT_CORPUS: Record<Intent, string[]> = {
+    METADATA: [
+        "Where is the event", "What is the venue", "When does the event start",
+        "Date of the event", "Duration", "Is this online", "start time", "end time",
+        "location", "address", "map", "meeting link"
+    ],
+    CONTENT: [
+        "What will I learn", "Topics covered", "Event agenda", "Speakers list",
+        "Workshops", "Key takeaways", "schedule", "sessions", "curriculum"
+    ],
+    PERSONAL: [
+        "Is this event useful for me", "Should I attend", "Relevant to my profile",
+        "Good for my role", "Help my career", "suitable for beginners", "worth my time"
+    ],
+    MEMBER_DISCOVERY: [
+        "Any investors attending", "Who is attending", "List of participants",
+        "Meet founders", "Looking for collaborators", "any students", "who else is coming",
+        "network with people", "find someone", "connect with"
+    ],
+    GENERAL: [
+        "Tell me about this event", "Give me an overview", "Explain the event", "Hi", "Hello"
+    ]
+};
+
+let intentVectors: { intent: Intent; vector: number[] }[] = [];
+
+/**
+ * Call ONCE at server startup to pre-compute embeddings
+ */
+export async function initializeIntentClassifier() {
+    intentVectors = [];
+    console.log("🔄 Initializing Intent Classifier (Pre-computing embeddings)...");
+
+    // Check if API key is present
+    if (!process.env.GEMINI_API_KEY) {
+        console.warn("⚠️ GEMINI_API_KEY missing. Intent classifier will rely on rule-based logic only.");
+        return;
+    }
+
+    try {
+        for (const intent in INTENT_CORPUS) {
+            const phrases = INTENT_CORPUS[intent as Intent];
+            // Process in parallel chunks to speed up startup
+            const promises = phrases.map(async (example) => {
+                try {
+                    const embedding = await EmbeddingService.generateEmbedding(example);
+                    return { intent: intent as Intent, vector: embedding };
+                } catch (e) {
+                    return null;
+                }
+            });
+
+            const results = await Promise.all(promises);
+            results.forEach(r => {
+                if (r) intentVectors.push(r);
+            });
+        }
+        console.log(`✅ Intent classifier initialized with ${intentVectors.length} semantic samples.`);
+    } catch (err) {
+        console.error("❌ Failed to initialize intent classifier:", err);
+    }
 }
+
+function cosineSimilarity(a: number[], b: number[]) {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    return (na === 0 || nb === 0) ? 0 : dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+function ruleBasedIntent(question: string): Intent | null {
+    const q = question.toLowerCase().trim();
+    if (/(where|when|date|time|venue|location|address|start|end|map|place)/.test(q)) return "METADATA";
+    if (/(investor|funding|mentor|attend|participants|members|people|connect|who|meet|coming|else)/.test(q)) return "MEMBER_DISCOVERY";
+    if (/(for me|useful|should i|relevant|profile|worth|benefit|my role|career)/.test(q)) return "PERSONAL";
+    if (/(learn|agenda|topics|speakers|workshop|schedule|track|session|curriculum)/.test(q)) return "CONTENT";
+    return null;
+}
+
+async function semanticIntent(question: string): Promise<{ intent: Intent; score: number }> {
+    try {
+        const queryVec = await EmbeddingService.generateEmbedding(question);
+        let bestIntent: Intent = "GENERAL";
+        let bestScore = 0;
+
+        for (const item of intentVectors) {
+            const score = cosineSimilarity(queryVec, item.vector);
+            if (score > bestScore) {
+                bestScore = score;
+                bestIntent = item.intent;
+            }
+        }
+        return { intent: bestIntent, score: bestScore };
+    } catch (e) {
+        console.error("Semantic intent determination failed:", e);
+        return { intent: "GENERAL", score: 0 };
+    }
+}
+
+export async function classifyIntent(question: string): Promise<Intent> {
+    // 1️⃣ Rule-based (Fastest, High Precision for keywords)
+    const ruleIntent = ruleBasedIntent(question);
+    if (ruleIntent) {
+        // console.log(`🔍 Rule Matched: ${ruleIntent}`); // Optional debug
+        return ruleIntent;
+    }
+
+    // 2️⃣ Semantic (Fallback for nuance)
+    if (intentVectors.length > 0) {
+        const semantic = await semanticIntent(question);
+        // User requested strict threshold, DO NOT lower blindly below 0.5
+        if (semantic.score >= 0.55) {
+            return semantic.intent;
+        }
+    }
+
+    return "GENERAL";
+}
+
+/* =========================================================
+   SERVICE IMPLEMENTATION
+========================================================= */
 
 export interface EventAssistantResponse {
     answer: string;
@@ -19,9 +146,6 @@ export interface EventAssistantResponse {
 }
 
 export const EventAssistantService = {
-    /**
-     * Event Assistant Chatbot using Google Gemini
-     */
     askEventAssistant: async (
         question: string,
         event: any,
@@ -31,70 +155,28 @@ export const EventAssistantService = {
         try {
             console.log(`🤖 EventAssistant: Processing "${question}"`);
 
-            // 1️⃣ CLASSIFY INTENT
-            // 1️⃣ CLASSIFY INTENT (Rule-Based + Keyword Expansion)
-            const lowerQ = question.toLowerCase();
-            let intent = "GENERAL";
+            // 1. CLASSIFY INTENT
+            const intent = await classifyIntent(question);
+            console.log(`🔍 Intent Classified: ${intent}`);
 
-            const metadataKeywords = ["where", "when", "venue", "location", "date", "time", "duration", "deadline"];
-            const contentKeywords = ["learn", "agenda", "session", "topic", "speaker", "workshop", "outcome", "schedule", "what will i", "track"];
-            const personalKeywords = ["for me", "useful", "benefit", "my profile", "should i", "relevant", "worth", "fit"];
-            const memberKeywords = [
-                "investor", "investors", "mentor", "mentors", "funding",
-                "who is coming", "who is attending", "participants", "attendees",
-                "meet", "connect", "find someone", "looking for", "networking",
-                "anyone", "any members", "any people", "is there", "are there", "does any",
-                "who else", "search for", "find"
-            ];
-
-            if (metadataKeywords.some(k => lowerQ.includes(k))) {
-                intent = "METADATA";
-            } else if (memberKeywords.some(k => lowerQ.includes(k))) {
-                intent = "MEMBER_DISCOVERY";
-            } else if (contentKeywords.some(k => lowerQ.includes(k))) {
-                intent = "CONTENT";
-            } else if (personalKeywords.some(k => lowerQ.includes(k))) {
-                intent = "PERSONAL";
-            }
-
-            console.log(`🔍 Intent Classified (Deterministic): ${intent}`);
-
-            // 2️⃣ EXECUTE FLOW BASED ON INTENT
-
-            // FLOW: MEMBER DISCOVERY
+            // 2. EXECUTE FLOW
             if (intent === "MEMBER_DISCOVERY") {
                 console.log("👥 Executing Member Discovery Flow");
                 if (!event.attendees || event.attendees.length === 0) {
-                    return {
-                        answer: "I couldn't find any other members attending this event yet.",
-                        relevantInfo: [],
-                        confidence: 90
-                    };
+                    return { answer: "I couldn't find any other members attending this event yet.", relevantInfo: [], confidence: 90 };
                 }
 
-                // 1. Generate Query Embedding
-                const { EmbeddingService } = await import("./embeddingService");
+                // Generate embedding for query
                 const queryVector = await EmbeddingService.generateEmbedding(question);
 
-                // 2. Fetch Members
+                // Fetch members
                 const { User } = await import("../models/User");
                 const members = await User.find({
                     _id: { $in: event.attendees },
                     profileEmbedding: { $exists: true, $ne: [] }
                 }).select('name oneLiner role phoneNumber profileEmbedding company');
 
-                // 3. Similarity Search
-                // 3. Similarity Search (Sorted by Score Descending)
-                const cosineSimilarity = (vecA: number[], vecB: number[]) => {
-                    let dot = 0.0, normA = 0.0, normB = 0.0;
-                    for (let i = 0; i < vecA.length; i++) {
-                        dot += vecA[i] * vecB[i];
-                        normA += vecA[i] * vecA[i];
-                        normB += vecB[i] * vecB[i];
-                    }
-                    return (normA === 0 || normB === 0) ? 0 : dot / (Math.sqrt(normA) * Math.sqrt(normB));
-                };
-
+                // Similarity Search (Sorted by Score Descending)
                 console.log(`🔍 [DEBUG] Member Discovery: Comparing "${question}" against ${members.length} attendees.`);
 
                 const results = members
@@ -102,27 +184,23 @@ export const EventAssistantService = {
                         const score = cosineSimilarity(queryVector, m.profileEmbedding || []);
                         return { m, score };
                     })
-                    .sort((a, b) => b.score - a.score); // DESCENDING sort by score (Highest first)
+                    .sort((a, b) => b.score - a.score); // DESCENDING sort
 
                 // Debug scores
                 results.forEach(r => console.log(`   - ${r.m.name}: ${r.score.toFixed(4)}`));
 
-                // Filter Strategy:
-                // 1. Strict Threshold: Only take matches > 0.45 (increased from 0.35 for stricter relevance)
-                // 2. Fallback: If no strict matches, take top 2 IF valid score (>0.2)
-
+                // Strict Threshold Filtering (0.45 threshold, Top 5)
+                // If the question is just looking for "investors", the semantic match should be high for investors.
                 let filtered = results.filter(item => item.score >= 0.45);
 
                 if (filtered.length === 0) {
-                    // Fallback to top 2 best matches if they are at least decent
+                    // Fallback: Top 2 if > 0.25 (User asked for safer logic, this ensures we don't return junk but also don't fail silently)
                     filtered = results.filter(item => item.score >= 0.25).slice(0, 2);
                 } else {
-                    // Limit to top 5 strictly relevant
                     filtered = filtered.slice(0, 5);
                 }
 
                 if (filtered.length === 0) {
-                    console.log("⚠️ No members met the similarity threshold.");
                     return {
                         answer: "I checked the attendee list, but I couldn't find anyone specifically matching that criteria.",
                         relevantInfo: [],
@@ -130,166 +208,78 @@ export const EventAssistantService = {
                     };
                 }
 
-                // 4. Construct Response
                 const responseLines = filtered.map(item => {
                     const m = item.m;
-                    // Format: **Name** (Role/Company) - Score debug
                     const desc = m.oneLiner || m.role || (m.company ? `Works at ${m.company}` : "Event Attendee");
-                    // removed contact number for privacy in general chat usually, but keeping if requested
                     return `• **${m.name}**\n  ${desc}`;
                 });
 
                 return {
                     answer: `Here are some members you might want to connect with:\n\n${responseLines.join("\n\n")}`,
-                    relevantInfo: [`Found ${results.length} matches based on profile similarity.`],
+                    relevantInfo: [`Found ${filtered.length} matches.`],
                     confidence: 95
                 };
             }
 
             if (intent === "METADATA") {
-                // FLOW 1: METADATA (Structured Data Only)
-                console.log("⚡ Executing Metadata Flow");
                 const answer = `
-                **Date:** ${event.dateTime ? new Date(event.dateTime).toLocaleString() : 'TBD'}
-                **Location:** ${event.location}
-                **Venue:** ${event.location}
-                `;
-                return {
-                    answer: answer.trim(),
-                    relevantInfo: ["Metadata retrieved directly from database"],
-                    confidence: 100
-                };
+                 **Date:** ${event.dateTime ? new Date(event.dateTime).toLocaleString() : 'TBD'}
+                 **Venue:** ${event.location || "TBD"}
+                 `;
+                return { answer: answer.trim(), relevantInfo: ["Metadata retrieved directly"], confidence: 100 };
             }
 
+            // CONTENT / PERSONAL (RAG)
             let contextChunks = "";
             let relevantInfo: string[] = [];
 
-            if (intent === "CONTENT" || intent === "PERSONAL") {
-                // FLOW 2 & 3: RAG Retrieval
-                console.log("📚 Executing RAG Flow for Content/Personal");
+            // RAG logic for Content/Personal/General
+            if (event.pdfChunks && event.pdfChunks.length > 0) {
+                try {
+                    const queryEmbedding = await EmbeddingService.generateEmbedding(question);
+                    const scoredChunks = event.pdfChunks.map((chunk: any) => ({
+                        text: chunk.text,
+                        score: cosineSimilarity(queryEmbedding, chunk.embedding)
+                    })).sort((a: any, b: any) => b.score - a.score).slice(0, 5);
 
-                // 1. Embed Question
-                // Note: We need to import the EmbeddingService here. 
-                // Since this is a static method in an object, we can import it dynamically or assume it's available.
-                const { EmbeddingService } = await import("./embeddingService");
-                const queryEmbedding = await EmbeddingService.generateEmbedding(question);
-
-                // 2. Vector Search on PDF Chunks (in-memory filtering for now, or DB aggregation)
-                // Since 'event' object is passed in, we access its chunks directly if populated.
-                // In a production scenario with large datasets, you'd do a DB aggregation.
-                // Here we assume event.pdfChunks is available.
-
-                if (event.pdfChunks && event.pdfChunks.length > 0) {
-                    const chunks = event.pdfChunks;
-
-                    // Cosine Similarity
-                    const scoredChunks = chunks.map((chunk: any) => {
-                        const score = cosineSimilarity(queryEmbedding, chunk.embedding);
-                        return { text: chunk.text, score };
-                    });
-
-                    // Sort and Top-K
-                    scoredChunks.sort((a: any, b: any) => b.score - a.score);
-                    const topChunks = scoredChunks.slice(0, 5); // Top 5
-
-                    contextChunks = topChunks.map((c: any) => `- ${c.text}`).join("\n\n");
-                    relevantInfo = topChunks.map(() => "Contains relevant info");
-                    console.log(`📄 Retrieved ${topChunks.length} chunks from PDF`);
-                } else {
-                    console.log("⚠️ No PDF chunks found for this event.");
+                    contextChunks = scoredChunks.map((c: any) => `- ${c.text}`).join("\n\n");
+                    if (scoredChunks.length > 0) relevantInfo.push("Retrieved PDF context");
+                } catch (e) {
+                    console.error("RAG retrieval failed:", e);
                 }
             }
 
-            // 3️⃣ GENERATE ANSWER (LLM)
-            // Different prompts for Content vs Personal
-
+            // GENERATE ANSWER
             let systemPrompt = "";
             let userContent = "";
 
             if (intent === "CONTENT") {
-                systemPrompt = `You are a helpful Event Assistant. Answer the user's question regarding specific event details (agenda, topics, etc).
-                Use ONLY the provided "PDF CONTENT" context.
-                If the answer is not in the context, state "The event details do not mention this."
-                Keep your answer short, concise (max 2-3 sentences), and direct. No filler words.`;
-
+                systemPrompt = "You are a helpful Event Assistant. Answer the user's question regarding specific event details (agenda, topics, etc). Use ONLY the provided PDF CONTENT. If the answer is not in the context, state that.";
                 userContent = `PDF CONTENT:\n${contextChunks}\n\nQUESTION: ${question}`;
-
             } else if (intent === "PERSONAL") {
-                systemPrompt = `You are a helpful advisor. The user is asking if this event is relevant to them.
-                Reason based on the "PDF CONTENT" and "USER PROFILE".
-                Give a strict "Yes" or "No" recommendation followed by one sentence explaining why. Keep it very short.`;
-
+                systemPrompt = "You are an advisor. Give a strict recommendation based on the USER PROFILE and PDF CONTENT. Keep it short.";
                 const userProfileText = `Name: ${userProfile.name}, Role: ${userProfile.role}, Interests: ${userProfile.interests?.join(", ")}`;
                 userContent = `PDF CONTENT:\n${contextChunks}\n\nUSER PROFILE:\n${userProfileText}\n\nQUESTION: ${question}`;
-
             } else {
-                // General/Fallthrough
-                systemPrompt = `You are a helpful assistant for the event "${event.name}". Answer politely and briefly (1 sentence).`;
-                userContent = `QUESTION: ${question}`;
+                systemPrompt = `You are a helpful assistant for the event "${event.name}". Answer politely and briefly.`;
+                userContent = `CONTEXT:\n${contextChunks}\n\nQUESTION: ${question}`;
             }
 
-            if (!genAI) {
-                console.error("❌ GEMINI_API_KEY is missing.");
-                return {
-                    answer: "I'm having trouble connecting to the AI service. Please check configuration.",
-                    relevantInfo: [],
-                    confidence: 0
-                };
-            }
+            if (!genAI) return { answer: "AI service unavailable (Check API Key).", relevantInfo: [], confidence: 0 };
 
-            let finalAnswer = "I couldn't generate an answer.";
-            const models = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-pro"];
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
             const finalPrompt = `${systemPrompt}\n\n${userContent}`;
+            const result = await model.generateContent(finalPrompt);
+            const finalAnswer = result.response.text();
 
-            for (const modelName of models) {
-                try {
-                    const model = genAI.getGenerativeModel({ model: modelName });
-                    const result = await model.generateContent(finalPrompt);
-                    const response = await result.response;
-                    finalAnswer = response.text();
-                    if (finalAnswer) break;
-                } catch (e: any) {
-                    console.log(`⚠️ ${modelName} failed: ${e.message}`);
-                    if (modelName === models[models.length - 1]) throw e;
-                }
-            }
-
-            return {
-                answer: finalAnswer,
-                relevantInfo: relevantInfo,
-                confidence: 85
-            };
+            return { answer: finalAnswer, relevantInfo, confidence: 85 };
 
         } catch (error: any) {
             console.error("❌ Gemini Error:", error);
-            return {
-                answer: "I'm having trouble connecting to the event assistant right now. Please try again later.",
-                relevantInfo: [],
-                confidence: 0
-            };
+            return { answer: "I'm having trouble connecting to the event assistant right now.", relevantInfo: [], confidence: 0 };
         }
     },
-
     getSuggestedQuestions: (_event: any, _userProfile: any): string[] => {
-        return [
-            "What is the agenda?",
-            "Is this relevant for me?",
-            "Who are the speakers?",
-            "Where is it involved?"
-        ];
+        return ["What is the agenda?", "Is this relevant for me?", "Who are the speakers?", "Where is it involved?"];
     }
 };
-
-// Utility for cosine similarity
-function cosineSimilarity(vecA: number[], vecB: number[]) {
-    if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-    for (let i = 0; i < vecA.length; i++) {
-        dotProduct += vecA[i] * vecB[i];
-        normA += vecA[i] * vecA[i];
-        normB += vecB[i] * vecB[i];
-    }
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}

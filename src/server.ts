@@ -161,6 +161,10 @@ const startServer = async (): Promise<void> => {
     // Connect to database
     await connectDB();
 
+    // Initialize AI Intent Classifier
+    const { initializeIntentClassifier } = await import("./services/eventAssistantService");
+    await initializeIntentClassifier();
+
     // Start listening
     app.listen(config.port, () => {
       console.log("================================================");
