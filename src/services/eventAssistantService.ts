@@ -115,6 +115,29 @@ async function semanticIntent(question: string): Promise<{ intent: Intent; score
     }
 }
 
+async function geminiFallbackIntent(question: string): Promise<Intent> {
+    if (!genAI) return "GENERAL";
+
+    const prompt = `
+    Classify the user's question into ONE intent.
+    Allowed intents: METADATA, CONTENT, PERSONAL, MEMBER_DISCOVERY, GENERAL
+    Rules: Respond with ONLY the intent name. No explanation.
+    Question: "${question}"
+    `;
+
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const res = await model.generateContent(prompt);
+        const text = res.response.text().trim().toUpperCase();
+        if (["METADATA", "CONTENT", "PERSONAL", "MEMBER_DISCOVERY", "GENERAL"].includes(text)) {
+            return text as Intent;
+        }
+    } catch (e) {
+        console.error("Gemini Intent Fallback failed:", e);
+    }
+    return "GENERAL";
+}
+
 export async function classifyIntent(question: string): Promise<Intent> {
     // 1️⃣ Rule-based (Fastest, High Precision for keywords)
     const ruleIntent = ruleBasedIntent(question);
@@ -132,7 +155,9 @@ export async function classifyIntent(question: string): Promise<Intent> {
         }
     }
 
-    return "GENERAL";
+    // 3️⃣ Gemini Fallback (Slow but Smarter - Last Resort)
+    console.log("⚠️ Low semantic confidence. Falling back to Gemini LLM for intent...");
+    return await geminiFallbackIntent(question);
 }
 
 /* =========================================================
