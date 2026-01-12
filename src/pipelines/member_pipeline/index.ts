@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
-import { User } from '../models/User';
-import EventMember from '../models/EventMember';
-import { Event } from '../models/Event';
-import { EmbeddingService } from '../services/embeddingService';
-import { SupabaseService } from '../services/supabaseService';
+import { User } from '../../models/User';
+import EventMember from '../../models/EventMember';
+import { Event } from '../../models/Event';
+import { EmbeddingService } from '../../services/embeddingService';
+import { SupabaseService } from '../../services/supabaseService';
 
 /**
  * UNIFIED MEMBER PIPELINE
