@@ -120,7 +120,7 @@ export class AssistantPipeline {
                 }
 
                 sources = matches;
-                contextText = matches.map(m => `[MEMBER] ${m.chunks}`).join("\n\n");
+                contextText = matches.map((m: any) => `[MEMBER] ${m.chunks}`).join("\n\n");
             }
 
             // CASE C: EVENT INFO
@@ -128,9 +128,9 @@ export class AssistantPipeline {
                 // Optimization: Direct DB Metadata lookup
                 // If asking strictly about time/location (and not "agenda"), try DB first
                 if (/\b(when|time|date|start|end|venue|location|where|address)\b/i.test(q) && !/\b(agenda|topic)\b/i.test(q)) {
-                    const event = await Event.findById(eventId).select('name dateTime location startDate endDate');
+                    const event = await Event.findById(eventId).select('name dateTime location');
                     if (event) {
-                        const dateStr = event.dateTime ? new Date(event.dateTime).toLocaleString() : (event.startDate ? new Date(event.startDate).toDateString() : 'TBD');
+                        const dateStr = event.dateTime ? new Date(event.dateTime).toLocaleString() : 'TBD';
                         const locStr = event.location || 'TBD';
                         // We still pass this to LLM to phrase it nicely, or return directly?
                         // User asked "Answer directly from database fields... for date, time, venue".

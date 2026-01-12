@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+
 import { User } from '../../models/User';
 import EventMember from '../../models/EventMember';
 import { Event } from '../../models/Event';
