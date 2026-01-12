@@ -69,44 +69,50 @@ app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ status: "ok" });
 });
 
+// Define API Router to handle both /api/* and root paths
+const apiRouter = express.Router();
+
 // Auth routes
-app.use("/auth", authRoutes);
+apiRouter.use("/auth", authRoutes);
 
 // AI Profile routes (protected)
-app.use("/me/ai-profile", aiProfileRoutes);
+apiRouter.use("/me/ai-profile", aiProfileRoutes);
 
 // Documents routes (protected)
-app.use("/me/documents", documentRoutes);
+apiRouter.use("/me/documents", documentRoutes);
 
 // Goals routes (protected)
-app.use("/me/goals", goalRoutes);
+apiRouter.use("/me/goals", goalRoutes);
 
 // Network codes routes (protected)
-app.use("/network-codes", networkCodeRoutes);
+apiRouter.use("/network-codes", networkCodeRoutes);
 
 // Connection routes (protected)
-app.use("/connections", connectionRoutes);
+apiRouter.use("/connections", connectionRoutes);
 
 // Upload routes (protected)
-app.use("/upload", uploadRoutes);
+apiRouter.use("/upload", uploadRoutes);
 
 // Following routes (protected)
-app.use("/followings", followingRoutes);
+apiRouter.use("/followings", followingRoutes);
 
 // QR Profile routes (protected)
-app.use("/qr-profiles", qrProfileRoutes);
+apiRouter.use("/qr-profiles", qrProfileRoutes);
 
 // User routes (protected)
-app.use("/users", userRoutes);
+apiRouter.use("/users", userRoutes);
 
 // Event routes (protected)
-app.use("/events", eventRoutes);
+apiRouter.use("/events", eventRoutes);
 
 // Event Connection routes
-app.use("/event-connections", eventConnectionRoutes);
+apiRouter.use("/event-connections", eventConnectionRoutes);
 
 // Notification routes (protected)
-app.use("/notifications", notificationRoutes);
+apiRouter.use("/notifications", notificationRoutes);
+
+// Mount API Router (Strictly at /api)
+app.use("/api", apiRouter);
 
 // 404 handler
 app.use((_req: Request, res: Response) => {
