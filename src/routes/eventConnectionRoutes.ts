@@ -7,8 +7,15 @@ import {
   checkEventParticipation,
   getEventParticipants,
   addManualMember,
-  uploadMembersExcel
+  askAssistant
 } from '../controllers/eventConnectionController';
+import {
+  addMembersFromJSON,
+  addSingleMember,
+  updateMemberProfile,
+  removeMemberFromEvent
+} from '../controllers/memberManagementController';
+import { uploadMembersExcelEnhanced } from '../controllers/excelUploadController';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -30,7 +37,24 @@ router.get('/participants/:eventId', getEventParticipants);
 // Manual add member
 router.post('/add-member', addManualMember);
 
-// Upload members from Excel
-router.post('/upload-members', upload.single('file'), uploadMembersExcel);
+// Upload members from Excel (uses MemberManagementService with embeddings)
+router.post('/upload-members', upload.single('file'), uploadMembersExcelEnhanced);
+
+// ========== NEW MEMBER MANAGEMENT ROUTES ==========
+
+// Add members from JSON array (bulk upload)
+router.post('/add-members-json', addMembersFromJSON);
+
+// Add a single member manually (enhanced version)
+router.post('/add-member-enhanced', addSingleMember);
+
+// Update member profile and regenerate embedding
+router.put('/update-member', updateMemberProfile);
+
+// Remove member from event and delete embedding
+router.delete('/remove-member', removeMemberFromEvent);
+
+// Ask Event Assistant
+router.post('/ask', askAssistant);
 
 export default router;

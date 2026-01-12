@@ -145,7 +145,7 @@ async function geminiFallbackIntent(question: string): Promise<Intent> {
     `;
 
     try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
         const res = await model.generateContent(prompt);
         const text = res.response.text().trim().toUpperCase();
         if (["METADATA", "CONTENT", "PERSONAL", "MEMBER_DISCOVERY", "GENERAL"].includes(text)) {
@@ -325,7 +325,7 @@ export const EventAssistantService = {
 
             if (!genAI) return { answer: "AI service unavailable (Check API Key).", relevantInfo: [], confidence: 0 };
 
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
             const finalPrompt = `${systemPrompt}\n\n${userContent}`;
             const result = await model.generateContent(finalPrompt);
             const finalAnswer = result.response.text();

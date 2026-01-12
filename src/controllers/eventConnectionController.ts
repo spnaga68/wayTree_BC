@@ -9,10 +9,12 @@ import { Event } from '../models/Event';
 import { User } from '../models/User';
 import { Notification } from '../models/Notification';
 import * as XLSX from 'xlsx';
+import { AssistantPipeline } from '../pipelines/assistant_pipeline';
 
 /**
  * Toggle event participation - join or leave an event
  * POST /event-connections/toggle-participation
+ * Now uses unified MemberManagementService pipeline with embeddings
  */
 export const toggleEventParticipation = async (req: Request, res: Response) => {
     try {
@@ -32,94 +34,86 @@ export const toggleEventParticipation = async (req: Request, res: Response) => {
             return res.status(404).json({ success: false, message: 'Event not found' });
         }
 
-        // Check if already joined (Check ALL models for robustness)
-        const [existingMember, existingConn, existingComm] = await Promise.all([
-            EventMember.findOne({ eventId, userId: participantId }),
-            EventConnection.findOne({ eventId, participantId }),
-            CommunityConnection.findOne({ eventId, participantId })
-        ]);
+        const user = await User.findById(participantId);
+        if (!user) {
+            console.log('❌ User not found');
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
 
-        const joinedRecord = existingMember || existingConn || existingComm;
+        // Check if already joined (only check EventMember now - single source of truth)
+        const existingMember = await EventMember.findOne({ eventId, userId: participantId });
 
-        if (joinedRecord) {
+        if (existingMember) {
             console.log('🚪 User is leaving event...');
-            // Leave: Remove from all possible models
-            await Promise.all([
-                EventMember.deleteOne({ eventId, userId: participantId }),
-                EventConnection.deleteOne({ eventId, participantId }),
-                CommunityConnection.deleteOne({ eventId, participantId }),
-                Event.findByIdAndUpdate(eventId, { $pull: { attendees: participantId } })
-            ]);
 
-            return res.status(200).json({
-                success: true,
-                message: 'Successfully left',
-                isJoined: false
-            });
-        } else {
-            console.log('➕ User is joining (Event/Community)...');
-            const user = await User.findById(participantId);
-            if (!user) {
-                console.log('❌ User not found');
-                return res.status(404).json({ success: false, message: 'User not found' });
-            }
+            // Use MemberManagementService to remove (handles embedding deletion)
+            const { MemberManagementService } = require('../services/memberManagementService');
+            const result = await MemberManagementService.removeMemberFromEvent(eventId, participantId);
 
-            let memberRecord;
-            let successMessage = 'Successfully joined';
-
-            if (event.isCommunity) {
-                // JOIN COMMUNITY -> CommunityConnection
-                memberRecord = await CommunityConnection.create({
-                    eventId,
-                    organizerId: event.createdBy,
-                    participantId, // using participantId as per schema
-                    name: user.name || 'Unknown',
-                    phoneNumber: user.phoneNumber,
-                    source: 'join',
-                    isJoined: true,
-                    isCommunity: true
+            if (result.success) {
+                console.log('✅ User left event and embedding deleted');
+                return res.status(200).json({
+                    success: true,
+                    message: 'Successfully left',
+                    isJoined: false
                 });
-                successMessage = 'Successfully joined community';
-                console.log(`✅ User joined Community. ID: ${memberRecord._id}`);
             } else {
-                // JOIN EVENT -> EventMember
-                memberRecord = await EventMember.create({
-                    eventId,
-                    organizerId: event.createdBy,
-                    userId: participantId, // using userId as per schema
-                    name: user.name || 'Unknown',
-                    phoneNumber: user.phoneNumber,
-                    source: 'join',
-                    isJoined: true,
-                    isEvent: true
-                });
-                successMessage = 'Successfully joined event';
-                console.log(`✅ User joined Event. ID: ${memberRecord._id}`);
+                throw new Error(result.message);
             }
+        } else {
+            console.log('➕ User is joining event...');
 
-            // Also add to attendees array for metadata consistency
-            await Event.findByIdAndUpdate(eventId, { $addToSet: { attendees: participantId } });
+            // Use MemberManagementService pipeline (handles user creation, embedding generation)
+            const { MemberManagementService } = require('../services/memberManagementService');
 
-            // Create Notification
-            try {
-                if (event.createdBy.toString() !== participantId) {
-                    await Notification.create({
-                        recipientId: event.createdBy,
-                        actorId: participantId,
-                        eventId: event._id,
-                        type: 'EVENT_JOIN'
-                    });
+            // Prepare member data from existing user
+            const memberData = {
+                name: user.name,
+                founderName: user.name,
+                company: user.company || '',
+                organisation: user.company || '',
+                bio: user.oneLiner || '',
+                about: user.oneLiner || '',
+                website: user.website || '',
+                phoneNumber: user.phoneNumber,
+                email: user.email,
+            };
+
+            // Add member using unified pipeline (creates embedding automatically)
+            const result = await MemberManagementService.addMemberToEvent(
+                eventId,
+                event.createdBy.toString(),
+                memberData,
+                'join' // source
+            );
+
+            if (result.success) {
+                console.log(`✅ User joined event. Embedding created: ${result.embeddingCreated}`);
+
+                // Create Notification
+                try {
+                    if (event.createdBy.toString() !== participantId) {
+                        await Notification.create({
+                            recipientId: event.createdBy,
+                            actorId: participantId,
+                            eventId: event._id,
+                            type: 'EVENT_JOIN'
+                        });
+                    }
+                } catch (notifyErr) {
+                    console.error('Failed to create notification:', notifyErr);
                 }
-            } catch (notifyErr) {
-                console.error('Failed to create notification:', notifyErr);
-            }
 
-            return res.status(200).json({
-                success: true,
-                message: successMessage,
-                isJoined: true,
-                member: memberRecord
-            });
+                return res.status(200).json({
+                    success: true,
+                    message: event.isCommunity ? 'Successfully joined community' : 'Successfully joined event',
+                    isJoined: true,
+                    embeddingCreated: result.embeddingCreated,
+                    isNewUser: result.isNewUser
+                });
+            } else {
+                throw new Error(result.message);
+            }
         }
 
     } catch (error) {
@@ -260,6 +254,14 @@ export const getEventParticipants = async (req: Request, res: Response) => {
 
         console.log(`✅ FINAL TOTAL participants for event ${eventId}: ${participants.length}`);
 
+        // DEBUG: Show first participant's full data
+        if (participants.length > 0) {
+            console.log(`\n🔍 First Participant Data:`);
+            console.log(`   Name: ${participants[0].name}`);
+            console.log(`   Company: ${participants[0].company}`);
+            console.log(`   OneLiner: ${participants[0].oneLiner ? participants[0].oneLiner.substring(0, 200) : 'EMPTY'}`);
+        }
+
         return res.status(200).json({
             success: true,
             count: participants.length,
@@ -280,20 +282,23 @@ export const getEventParticipants = async (req: Request, res: Response) => {
 /**
  * Manually add a member to an event/community
  * POST /event-connections/add-member
+ * Now uses MemberPipeline for consistency
  */
 export const addManualMember = async (req: Request, res: Response) => {
     try {
-        const { eventId, name, phoneNumber, description } = req.body;
+        const { eventId, name, phoneNumber, email, company, bio, description } = req.body;
         let { organizerId } = req.body;
 
-        if (!eventId || !name || !phoneNumber) {
+        console.log(`\n➕ [ADD MANUAL MEMBER] Event: ${eventId}, Name: ${name}`);
+
+        if (!eventId || !name) {
             return res.status(400).json({
                 success: false,
-                message: 'EventId, Name, and PhoneNumber are required'
+                message: 'EventId and Name are required'
             });
         }
 
-        // 1. Fetch Event to check type (Event vs Community) AND organizer
+        // Fetch Event
         const event = await Event.findById(eventId);
         if (!event) {
             return res.status(404).json({ success: false, message: 'Event not found' });
@@ -304,132 +309,44 @@ export const addManualMember = async (req: Request, res: Response) => {
             organizerId = event.createdBy;
         }
 
-        // 2. Check/Create User based on Phone Number
-        let userId: any = null;
-        let user = await User.findOne({ phoneNumber });
+        // Use MemberPipeline for consistent handling
+        const { MemberPipeline } = require('../pipelines/member_pipeline');
 
-        if (user) {
-            // User exists
-            userId = user._id;
-            console.log(`✅ User found for manual add: ${user.name} (${userId})`);
-        } else {
-            // Create New User
-            console.log(`🆕 Creating new user for manual add: ${name} (${phoneNumber})`);
-
-            // Create minimal user
-            user = new User({
+        const result = await MemberPipeline.addMember({
+            eventId,
+            organizerId,
+            userData: {
                 name,
-                phoneNumber,
-                oneLiner: description || '',
-                role: 'member', // Default role
-                // email is required by schema! We need a dummy email for manual users?
-                email: `manual_${phoneNumber}_${Date.now()}@placeholder.waytree.com`
-            });
-
-            // Generate Profile Embeddings immediately
-            try {
-                // Import Service dynamically or at top.
-                const { EmbeddingService } = require('../services/embeddingService');
-
-                const profileText = EmbeddingService.createUserProfileText(user);
-                const embedding = await EmbeddingService.generateEmbedding(profileText);
-
-                if (embedding && embedding.length > 0) {
-                    user.profileEmbedding = embedding;
-                    console.log('✨ Generated embeddings for new manual user');
-                }
-            } catch (embedError) {
-                console.error('⚠️ Failed to generate embedding for new manual user:', embedError);
-            }
-
-            await user.save();
-            userId = user._id;
-        }
-
-        // 3. Create Connection based on Type (Community vs Event)
-        let memberRecord;
-
-        if (event.isCommunity) {
-            // Check for duplicate in CommunityConnection
-            const existing = await CommunityConnection.findOne({ eventId, participantId: userId });
-            if (existing) {
-                // Update if exists but not joined? Or just return error? 
-                // If manual add, assuming we force join if they were left?
-                // For now, return conflict as before
-                return res.status(409).json({
-                    success: false,
-                    message: `User is already a member of this community.`
-                });
-            }
-
-            memberRecord = await CommunityConnection.create({
-                eventId,
-                organizerId: event.createdBy, // Community owner
-                participantId: userId,
-                name,
-                phoneNumber,
-                source: 'manual',
-                isJoined: true, // Auto-join logic
-                isCommunity: true
-            });
-
-        } else {
-            // Event Member
-            // Check for duplicate in EventMember
-            // We check by userId OR phoneNumber to be safe
-            const existing = await EventMember.findOne({
-                eventId,
-                $or: [{ userId }, { phoneNumber }]
-            });
-
-            if (existing) {
-                return res.status(409).json({
-                    success: false,
-                    message: `User is already a member of this event.`
-                });
-            }
-
-            memberRecord = await EventMember.create({
-                eventId,
-                organizerId: event.createdBy,
-                userId: userId,
-                name,
-                phoneNumber,
-                source: 'manual',
-                isJoined: true, // Auto-join logic
-                isEvent: true
-            });
-
-            // Update Event attendees count/list if needed?
-            // Event schema has 'attendees' array of strings.
-            if (!event.attendees.includes(userId.toString())) {
-                event.attendees.push(userId.toString());
-                await event.save();
-            }
-        }
-
-        // 4. Notification Logic (If added by someone else)
-        try {
-            // If the organizer added them, notify the USER (if they ever login/have app)
-            // Or if a different organizer added them? 
-            // Current logic: notifies ORGANIZER? 
-            // "if organizerId !== registeredUser._id" -> If the person added is NOT the organizer?
-            // Usually, Organizer adds Member. Notification should go to Member "You were added..."? 
-            // Or if Member Manual Joined? "manual" source usually means Organizer typed it in.
-            // Let's keep existing logic structure but fixing IDs.
-
-            // If the actor is the Organizer, and they added 'user', we might want to notify 'user'.
-            // But existing logic notified 'organizerId'. 
-            // Let's skip notification changes for now to avoid breaking existing flow, unless required.
-        } catch (notifyErr) {
-            console.error('Failed to create notification for manual member:', notifyErr);
-        }
-
-        return res.status(201).json({
-            success: true,
-            message: 'Member added successfully',
-            member: memberRecord
+                company: company || '',
+                bio: bio || description || '',
+                phoneNumber: phoneNumber || undefined,  // Will auto-generate if missing
+                email: email || undefined,              // Will auto-generate if missing
+                website: undefined
+            },
+            source: 'manual'
         });
+
+        if (result.success) {
+            console.log(`✅ Manual member added via pipeline. Embedding: ${result.embeddingCreated}`);
+
+            return res.status(201).json({
+                success: true,
+                message: 'Member added successfully',
+                userId: result.userId,
+                isNewUser: result.isNewUser,
+                embeddingCreated: result.embeddingCreated
+            });
+        } else if (result.isExistingMember) {
+            return res.status(409).json({
+                success: false,
+                message: 'User is already a member of this event'
+            });
+        } else {
+            return res.status(400).json({
+                success: false,
+                message: result.error || result.message
+            });
+        }
 
     } catch (error) {
         console.error('❌ Error adding manual member:', error);
@@ -525,6 +442,39 @@ export const uploadMembersExcel = async (req: Request, res: Response) => {
             success: false,
             message: 'Failed to process file',
             error: (error as any).message
+        });
+    }
+};
+
+/**
+ * Ask the Event Assistant
+ * POST /event-connections/ask
+ */
+export const askAssistant = async (req: Request, res: Response) => {
+    try {
+        const { eventId, question, userId } = req.body;
+
+        if (!eventId || !question) {
+            return res.status(400).json({
+                success: false,
+                message: 'eventId and question are required'
+            });
+        }
+
+        const result = await AssistantPipeline.askQuestion(eventId, question, userId);
+
+        return res.status(200).json({
+            success: true,
+            answer: result.answer,
+            sources: result.sources
+        });
+
+    } catch (error) {
+        console.error('Error in askAssistant:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+            error: (error as Error).message
         });
     }
 };
